@@ -397,6 +397,39 @@ process_one_dir() {
       fi
     fi
 
+    # Regression guard for Issue #207 follow-up:
+    # `pto.bitcast` must alias the original tile storage via
+    # `TASSIGN(dst, reinterpret_cast<uint64_t>(src.data()))`.
+    if [[ "$base" == "bitcast_inplace_cvt" ]]; then
+      if ! "$python" - "$cpp" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], "r", encoding="utf-8").read()
+ptr_vars = {
+    match.group(1)
+    for match in re.finditer(r"\b(\w+)\s*=\s*\w+\.data\(\);", text)
+}
+addr_vars = {
+    match.group(1)
+    for match in re.finditer(
+        r"\b(\w+)\s*=\s*reinterpret_cast<uint64_t>\((\w+)\);", text
+    )
+    if match.group(2) in ptr_vars
+}
+ok = any(
+    re.search(rf"TASSIGN\([^,]+,\s*{re.escape(addr_var)}\);", text)
+    for addr_var in addr_vars
+)
+sys.exit(0 if ok else 1)
+PY
+      then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing aliasing TASSIGN() lowering for pto.bitcast"
+        overall=1
+        continue
+      fi
+    fi
+
 	    # Regression guard for Issue #190:
 	    # Infer layout for a 2D column-vector view (16 x 1) should prefer DN.
 	    if [[ "$base" == "tensor_view_infer_layout_dn" ]]; then

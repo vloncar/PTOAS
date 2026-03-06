@@ -2688,6 +2688,11 @@ mlir::LogicalResult mlir::pto::BitcastOp::verify() {
   if (srcTy.getMemorySpace() != dstTy.getMemorySpace())
     return emitOpError("expects src/result to have the same memorySpace");
 
+  if (srcTy.getElementType() == dstTy.getElementType())
+    return emitOpError(
+        "expects src/result to have different element types; use "
+        "pto.treshape for shape/config changes");
+
   if (srcTy.getShape() != dstTy.getShape())
     return emitOpError("expects src/result to have the same shape; use pto.treshape for shape changes");
 
