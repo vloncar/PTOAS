@@ -191,6 +191,18 @@ static std::optional<Layout> tileBLayoutToGlobalLayout(Type tileLikeTy) {
   return std::nullopt;
 }
 
+static bool isVectorTileType(Type tileLikeTy) {
+  auto tbTy = dyn_cast<TileBufType>(tileLikeTy);
+  if (!tbTy)
+    return false;
+  auto ms = dyn_cast_or_null<AddressSpaceAttr>(tbTy.getMemorySpace());
+  return ms && ms.getAddressSpace() == AddressSpace::VEC;
+}
+
+static bool isMinorColsOne(ArrayRef<int64_t> shape) {
+  return !shape.empty() && shape.back() == 1;
+}
+
 struct LayoutPreference {
   std::optional<Layout> preferred;
   bool conflict = false;
@@ -223,13 +235,13 @@ static LayoutPreference collectPreferredLayoutFromConsumers(Value tensorView) {
       }
 
       if (auto load = dyn_cast<pto::TLoadOp>(owner)) {
-        if (operandIndex == 0)
+        if (operandIndex == 0 && isVectorTileType(load.getDst().getType()))
           mergePref(tileBLayoutToGlobalLayout(load.getDst().getType()));
         continue;
       }
 
       if (auto store = dyn_cast<pto::TStoreOp>(owner)) {
-        if (operandIndex == 1)
+        if (operandIndex == 1 && isVectorTileType(store.getSrc().getType()))
           mergePref(tileBLayoutToGlobalLayout(store.getSrc().getType()));
         continue;
       }
@@ -345,18 +357,25 @@ struct InferPTOLayoutPass
       }
 
       auto pref = collectPreferredLayoutFromConsumers(op.getResult());
+      // Guard rail: only use consumer preference for minor-2D ambiguous
+      // "column-vector-like" outputs (cols == 1). This is the row-reduction
+      // case we need to repair; applying it more broadly can violate pto-isa
+      // static layout constraints (e.g. some GEMV/GEMM outputs).
+      auto preferredForAmbiguous =
+          (!pref.conflict && isMinorColsOne(shape)) ? pref.preferred
+                                                    : std::nullopt;
       bool isAmbiguous = false;
       auto inferred = inferLayout5D(
           shape, strides,
           elemByteSize(cast<TensorViewType>(op.getResult().getType())
                            .getElementType()),
-          pref.conflict ? std::nullopt : pref.preferred, &isAmbiguous);
+          preferredForAmbiguous, &isAmbiguous);
       verifyOrSetLayout(op.getOperation(), inferred);
 
       // If this make_tensor_view layout was inferred in an ambiguous ND/DN
       // shape and a downstream tile has a clear BLayout preference, force-align
       // to that preference to avoid GlobalTensor/Tile mismatch.
-      if (isAmbiguous &&
+      if (isAmbiguous && isMinorColsOne(shape) &&
           op->getAttrOfType<BoolAttr>(kInferredLayoutAttrName)) {
         auto cur = op->getAttrOfType<LayoutAttr>(kLayoutAttrName);
         if (cur && pref.preferred && *pref.preferred != cur.getLayout())
@@ -491,7 +510,9 @@ struct InferPTOLayoutPass
       // Consistency check and repair (inferred + ambiguous only): if source view
       // layout conflicts with the consumer tile BLayout, retarget to tile
       // preference to keep emitted GlobalTensor/Tile compatible.
-      auto tilePref = tileBLayoutToGlobalLayout(op.getDst().getType());
+      auto tilePref = isVectorTileType(op.getDst().getType())
+                          ? tileBLayoutToGlobalLayout(op.getDst().getType())
+                          : std::nullopt;
       if (tilePref && (*tilePref == Layout::ND || *tilePref == Layout::DN)) {
         auto viewInfo = resolveLayoutFromViewValue(op.getSrc());
         if (viewInfo.owner && viewInfo.layout &&
@@ -505,7 +526,7 @@ struct InferPTOLayoutPass
                   elemByteSize(cast<TensorViewType>(tv.getResult().getType())
                                    .getElementType()),
                   std::nullopt, &ambiguous);
-              if (ambiguous) {
+              if (ambiguous && isMinorColsOne(shape)) {
                 setLayout(viewInfo.owner, *tilePref, /*inferred=*/true);
                 setLayout(op.getOperation(), *tilePref, /*inferred=*/true);
               }
@@ -534,7 +555,9 @@ struct InferPTOLayoutPass
         }
       }
 
-      auto tilePref = tileBLayoutToGlobalLayout(op.getSrc().getType());
+      auto tilePref = isVectorTileType(op.getSrc().getType())
+                          ? tileBLayoutToGlobalLayout(op.getSrc().getType())
+                          : std::nullopt;
       if (tilePref && (*tilePref == Layout::ND || *tilePref == Layout::DN)) {
         auto viewInfo = resolveLayoutFromViewValue(op.getDst());
         if (viewInfo.owner && viewInfo.layout &&
@@ -548,7 +571,7 @@ struct InferPTOLayoutPass
                   elemByteSize(cast<TensorViewType>(tv.getResult().getType())
                                    .getElementType()),
                   std::nullopt, &ambiguous);
-              if (ambiguous) {
+              if (ambiguous && isMinorColsOne(shape)) {
                 setLayout(viewInfo.owner, *tilePref, /*inferred=*/true);
                 setLayout(op.getOperation(), *tilePref, /*inferred=*/true);
               }
