@@ -171,10 +171,12 @@ def barrier(op, *, loc=None, ip=None):
 # -----------------------------------------------------------------------------
 # A5 buffer-id sync helpers
 # -----------------------------------------------------------------------------
-def get_buf(pipe, buf_id, mode=0, *, loc=None, ip=None):
+def get_buf(op_type, buf_id, mode=0, *, loc=None, ip=None):
     ctx = loc.context if loc else _ods_ir.Context.current
+    if isinstance(op_type, (PipeAttr, PIPE)):
+        raise TypeError("get_buf expects SyncOpType (or SyncOpTypeAttr), not PIPE/PipeAttr")
     attrs = {
-        "pipe": _ensure_pipe_attr(pipe, ctx),
+        "op_type": _ensure_sync_attr(op_type, ctx),
         "buf_id": _ensure_i32_attr(buf_id, "buf_id", ctx),
         "mode": _ensure_i32_attr(mode, "mode", ctx),
     }
@@ -186,10 +188,12 @@ def get_buf(pipe, buf_id, mode=0, *, loc=None, ip=None):
     )
 
 
-def rls_buf(pipe, buf_id, mode=0, *, loc=None, ip=None):
+def rls_buf(op_type, buf_id, mode=0, *, loc=None, ip=None):
     ctx = loc.context if loc else _ods_ir.Context.current
+    if isinstance(op_type, (PipeAttr, PIPE)):
+        raise TypeError("rls_buf expects SyncOpType (or SyncOpTypeAttr), not PIPE/PipeAttr")
     attrs = {
-        "pipe": _ensure_pipe_attr(pipe, ctx),
+        "op_type": _ensure_sync_attr(op_type, ctx),
         "buf_id": _ensure_i32_attr(buf_id, "buf_id", ctx),
         "mode": _ensure_i32_attr(mode, "mode", ctx),
     }

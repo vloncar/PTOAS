@@ -1170,17 +1170,22 @@ def WaitFlagOp : PTO_Op<"wait_flag"> {
 //===----------------------------------------------------------------------===//
 
 def GetBufOp : PTO_Op<"get_buf"> {
-  let summary = "Acquire a buffer-id token on a given pipe (A5)";
+  let summary = "Acquire a buffer-id token for a sync op type (A5)";
   let description = [{
     `pto.get_buf` participates in a buffer-id based ordering model. Operations
-    in the same pipe that are guarded by the same buffer-id are enforced to
-    execute in program order relative to other pipes using the same buffer-id.
+    mapped to the same pipe and guarded by the same buffer-id are enforced to
+    execute in program order relative to other mapped pipes using the same
+    buffer-id.
+
+    Like `pto.record_event` / `pto.wait_event`, this op accepts a high-level
+    op type endpoint (`pipe_event_type` / `sync_op_type`) instead of a concrete
+    pipe name.
 
     This op is intended to be lowered to the CCEC builtin intrinsic `get_buf`.
   }];
 
   let arguments = (ins
-    PTO_PipeAttr:$pipe,
+    PTO_PipeEventTypeLikeAttr:$op_type,
     I32Attr:$buf_id,
     DefaultValuedAttr<I32Attr, "0">:$mode
   );
@@ -1190,20 +1195,21 @@ def GetBufOp : PTO_Op<"get_buf"> {
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `[` $pipe `,` $buf_id `]` attr-dict
+    `[` $op_type `,` $buf_id `]` attr-dict
   }];
 }
 
 def RlsBufOp : PTO_Op<"rls_buf"> {
-  let summary = "Release a buffer-id token on a given pipe (A5)";
+  let summary = "Release a buffer-id token for a sync op type (A5)";
   let description = [{
-    Releases the previously acquired buffer-id token for the given pipe.
+    Releases the previously acquired buffer-id token for the given op type
+    (mapped to a concrete pipe).
 
     This op is intended to be lowered to the CCEC builtin intrinsic `rls_buf`.
   }];
 
   let arguments = (ins
-    PTO_PipeAttr:$pipe,
+    PTO_PipeEventTypeLikeAttr:$op_type,
     I32Attr:$buf_id,
     DefaultValuedAttr<I32Attr, "0">:$mode
   );
@@ -1213,7 +1219,7 @@ def RlsBufOp : PTO_Op<"rls_buf"> {
   let hasVerifier = 1;
 
   let assemblyFormat = [{
-    `[` $pipe `,` $buf_id `]` attr-dict
+    `[` $op_type `,` $buf_id `]` attr-dict
   }];
 }
 

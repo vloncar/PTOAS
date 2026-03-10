@@ -14,8 +14,11 @@ def build():
 
             with InsertionPoint(entry):
                 # Acquire/release buffer-id token on MTE2.
-                pto.get_buf(pto.PIPE.PIPE_MTE2, 0)
-                pto.rls_buf(pto.PIPE.PIPE_MTE2, 0)
+                pto.get_buf(pto.TLOAD, 0)
+                pto.rls_buf(pto.TLOAD, 0)
+                # Acquire/release buffer-id token on VEC.
+                pto.get_buf(pto.TVEC, 0)
+                pto.rls_buf(pto.TVEC, 0)
                 func.ReturnOp([])
 
             module.operation.verify()

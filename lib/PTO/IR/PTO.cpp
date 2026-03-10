@@ -1973,14 +1973,56 @@ LogicalResult StoreScalarOp::verify() {
 }
 
 // ---- GetBufOp / RlsBufOp ----
-static LogicalResult verifyBufSyncOp(Operation *op, PipeAttr pipeAttr,
-                                     IntegerAttr bufIdAttr, IntegerAttr modeAttr) {
-  if (!pipeAttr)
-    return op->emitOpError("expects 'pipe' attribute");
+static FailureOr<SyncOpType> getSyncOpTypeFromBufSyncAttr(Attribute attr,
+                                                          Operation *op) {
+  if (auto a = attr.dyn_cast<PipeEventTypeAttr>())
+    return a.getOpType();
+  if (auto a = attr.dyn_cast<SyncOpTypeAttr>())
+    return a.getOpType();
+  auto diag =
+      op->emitOpError("expects 'op_type' to be pipe_event_type/sync_op_type, got ");
+  diag << attr;
+  return failure();
+}
 
-  pto::PIPE pipe = pipeAttr.getPipe();
+static pto::PIPE mapSyncOpTypeToPipe(SyncOpType opType) {
+  switch (opType) {
+  case SyncOpType::TLOAD:
+    return pto::PIPE::PIPE_MTE2;
+  case SyncOpType::TSTORE_VEC:
+    return pto::PIPE::PIPE_MTE3;
+  case SyncOpType::TSTORE_ACC:
+    return pto::PIPE::PIPE_FIX;
+  case SyncOpType::TMOV_M2L:
+  case SyncOpType::TMOV_M2B:
+    return pto::PIPE::PIPE_MTE1;
+  case SyncOpType::TMOV_M2S:
+    return pto::PIPE::PIPE_FIX;
+  case SyncOpType::TMOV_M2V:
+    return pto::PIPE::PIPE_V;
+  case SyncOpType::TMOV_V2M:
+    return pto::PIPE::PIPE_FIX;
+  case SyncOpType::TMATMUL:
+    return pto::PIPE::PIPE_M;
+  case SyncOpType::TVEC:
+  case SyncOpType::TVECWAIT_EVENT:
+    return pto::PIPE::PIPE_V;
+  default:
+    return pto::PIPE::PIPE_UNASSIGNED;
+  }
+}
+
+static LogicalResult verifyBufSyncOp(Operation *op, Attribute opTypeAttr,
+                                     IntegerAttr bufIdAttr, IntegerAttr modeAttr) {
+  if (!opTypeAttr)
+    return op->emitOpError("expects 'op_type' attribute");
+
+  auto opTypeOr = getSyncOpTypeFromBufSyncAttr(opTypeAttr, op);
+  if (failed(opTypeOr))
+    return failure();
+  pto::PIPE pipe = mapSyncOpTypeToPipe(*opTypeOr);
   if (pipe == pto::PIPE::PIPE_ALL || pipe == pto::PIPE::PIPE_UNASSIGNED)
-    return op->emitOpError("expects 'pipe' to be a concrete pipe, not PIPE_ALL/PIPE_UNASSIGNED");
+    return op->emitOpError("expects 'op_type' to map to a concrete pipe, not PIPE_ALL/PIPE_UNASSIGNED");
 
   if (!bufIdAttr)
     return op->emitOpError("expects 'buf_id' attribute");
@@ -1998,12 +2040,12 @@ static LogicalResult verifyBufSyncOp(Operation *op, PipeAttr pipeAttr,
 }
 
 LogicalResult GetBufOp::verify() {
-  return verifyBufSyncOp(getOperation(), getPipe(), getBufIdAttr(),
+  return verifyBufSyncOp(getOperation(), getOpTypeAttr(), getBufIdAttr(),
                          getModeAttr());
 }
 
 LogicalResult RlsBufOp::verify() {
-  return verifyBufSyncOp(getOperation(), getPipe(), getBufIdAttr(),
+  return verifyBufSyncOp(getOperation(), getOpTypeAttr(), getBufIdAttr(),
                          getModeAttr());
 }
 // ---- TOp ----
