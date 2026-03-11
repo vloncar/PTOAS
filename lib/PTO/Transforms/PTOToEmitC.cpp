@@ -6645,6 +6645,23 @@ struct PTOBindTileToEmitC : public OpConversionPattern<pto::BindTileOp> {
       return success();
     }
 
+    // Generic tile-to-tile rebind path: preserve the same backing storage and
+    // rebuild a sibling tile with updated metadata/valid dims.
+    if (isTileLike(tileCandidate)) {
+      FailureOr<Value> dstTile = buildTileValue();
+      if (failed(dstTile))
+        return failure();
+      FailureOr<Value> addr = buildIntegralAddress(tileCandidate);
+      if (failed(addr))
+        return failure();
+
+      rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{}, "TASSIGN",
+                                           ArrayAttr{}, ArrayAttr{},
+                                           ValueRange{*dstTile, *addr});
+      rewriter.replaceOp(op, *dstTile);
+      return success();
+    }
+
     SmallVector<Value> physAddrs;
     Value source = op.getSource();
 
