@@ -204,9 +204,6 @@ ptoas --version
 
 ```
 
-> `ptoas --version` 默认显示项目根目录 `CMakeLists.txt` 里的基线版本；
-> GitHub `release` workflow 会把版本号的第二段自动 `+1`，例如 `0.7 -> 0.8`、`0.10 -> 0.11`，并校验 release tag 与结果一致。
-
 ### 5.2 Python 接口 (Python API)
 
 配置好环境变量后，PTO Dialect 将作为 `mlir.dialects` 的一部分被加载。
