@@ -1,6 +1,15 @@
 #!/usr/bin/env python3
-from mlir.ir import Context, InsertionPoint, IntegerType, Location, MemRefType, Module
-from mlir.dialects import func, pto
+from mlir.ir import (
+    Context,
+    F32Type,
+    IndexType,
+    InsertionPoint,
+    IntegerType,
+    Location,
+    MemRefType,
+    Module,
+)
+from mlir.dialects import arith, func, pto
 
 
 def build():
@@ -9,21 +18,27 @@ def build():
         with Location.unknown(ctx):
             module = Module.create()
 
+            f32 = F32Type.get(ctx)
+            idx = IndexType.get(ctx)
             i64 = IntegerType.get_signless(64, ctx)
-            # Minimal valid memref operand for pto.set_ffts verifier (i64 element).
-            ffts_ty = MemRefType.get([1], i64)
-            fn_ty = func.FunctionType.get([ffts_ty], [])
+            # Reserve a practical FFTS workspace size instead of a 1-element stub.
+            ffts_ty = MemRefType.get([256], i64)
+            ptr_f32 = pto.PtrType.get(f32, ctx)
+            fn_ty = func.FunctionType.get([ffts_ty, ptr_f32], [])
 
             with InsertionPoint(module.body):
                 fn = func.FuncOp("test_intercore_sync_a3", fn_ty)
                 entry = fn.add_entry_block()
 
             with InsertionPoint(entry):
+                c0 = arith.ConstantOp(idx, 0).result
+                one = arith.ConstantOp(f32, 1.0).result
                 pipe_fix = pto.PipeAttr.get(pto.PIPE.PIPE_FIX, ctx)
                 pipe_v = pto.PipeAttr.get(pto.PIPE.PIPE_V, ctx)
                 pto.set_ffts(entry.arguments[0])
                 pto.sync_set(pipe_fix, 3)
                 pto.sync_wait(pipe_v, 3)
+                pto.store_scalar(entry.arguments[1], c0, one)
                 func.ReturnOp([])
 
             module.operation.verify()

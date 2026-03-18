@@ -186,6 +186,18 @@ def _detect_output_pointer_param(text: str, pointer_param_names):
     return None
 
 
+def _detect_set_ffts_pointer_params(text: str, pointer_param_names):
+    if not pointer_param_names:
+        return set()
+
+    hits = set()
+    for name in pointer_param_names:
+        pat = rf"\bset_ffts_base_addr\b[^\n;]*\b{re.escape(name)}\b"
+        if re.search(pat, text):
+            hits.add(name)
+    return hits
+
+
 def _parse_kernel_params(text: str):
     match = re.search(r"__global__\s+(?:\w+\s+)*void\s+\w+\s*\(([^)]*)\)", text, re.S)
     if not match:
@@ -874,9 +886,16 @@ def generate_testcase(
             if inferred:
                 inferred_void_ptr_types[name] = inferred
 
-    output_ptr = _detect_output_pointer_param(raw_kernel_for_analysis, pointer_param_names)
-    if output_ptr is None and pointer_param_names:
-        output_ptr = pointer_param_names[0] if len(pointer_param_names) == 1 else pointer_param_names[-1]
+    ffts_param_names = _detect_set_ffts_pointer_params(raw_kernel_for_analysis, pointer_param_names)
+    non_ffts_pointer_param_names = [n for n in pointer_param_names if n not in ffts_param_names]
+
+    output_ptr = _detect_output_pointer_param(raw_kernel_for_analysis, non_ffts_pointer_param_names)
+    if output_ptr is None and non_ffts_pointer_param_names:
+        output_ptr = (
+            non_ffts_pointer_param_names[0]
+            if len(non_ffts_pointer_param_names) == 1
+            else non_ffts_pointer_param_names[-1]
+        )
 
     params = []
     for raw in raw_params:
@@ -892,7 +911,11 @@ def generate_testcase(
                     "name": name,
                     "cpp_type": cpp_type,
                     "host_type": _cpp_host_type(cpp_type),
-                    "role": "output" if name == output_ptr else "input",
+                    "role": (
+                        "ffts"
+                        if name in ffts_param_names
+                        else ("output" if name == output_ptr else "input")
+                    ),
                 }
             )
         else:
@@ -912,13 +935,16 @@ def generate_testcase(
     # - Some kernels are in-place (single pointer param) or may read from an
     #   "output" pointer as scratch. Leaving buffers uninitialized leads to
     #   non-determinism between CPU golden and real NPU.
-    init_ptrs = [p for p in params if p["kind"] == "ptr"]
-    output_ptrs = [p for p in params if p["kind"] == "ptr" and p["role"] == "output"]
+    data_ptrs = [p for p in params if p["kind"] == "ptr" and p["role"] != "ffts"]
+    ffts_ptrs = [p for p in params if p["kind"] == "ptr" and p["role"] == "ffts"]
+    init_ptrs = list(data_ptrs)
+    output_ptrs = [p for p in data_ptrs if p["role"] == "output"]
 
-    ptr_elem_counts = {p["name"]: logical_elem_count for p in params if p["kind"] == "ptr"}
+    ptr_elem_counts = {p["name"]: logical_elem_count for p in data_ptrs}
     inferred_counts = _infer_gm_pointer_elem_counts(raw_kernel_for_analysis, pointer_param_names)
     for name, cnt in inferred_counts.items():
-        ptr_elem_counts[name] = max(ptr_elem_counts.get(name, logical_elem_count), cnt)
+        if name in ptr_elem_counts:
+            ptr_elem_counts[name] = max(ptr_elem_counts.get(name, logical_elem_count), cnt)
 
     templates_root = Path(__file__).resolve().parents[1] / "templates"
     template = (templates_root / "main_template.cpp").read_text(encoding="utf-8")
@@ -937,10 +963,8 @@ def generate_testcase(
             launch_call_args.append(p["name"])
 
     param_decls_lines = []
-    if any(p["kind"] == "ptr" for p in params):
-        for p in params:
-            if p["kind"] != "ptr":
-                continue
+    if data_ptrs:
+        for p in data_ptrs:
             elem_cnt = ptr_elem_counts.get(p["name"], logical_elem_count)
             param_decls_lines.append(f"    size_t elemCount_{p['name']} = {elem_cnt};")
             param_decls_lines.append(
@@ -975,16 +999,20 @@ def generate_testcase(
     for p in params:
         if p["kind"] != "ptr":
             continue
-        param_decls_lines.append(f"    {p['host_type']} *{p['name']}Host = nullptr;")
-        param_decls_lines.append(f"    {p['host_type']} *{p['name']}Device = nullptr;")
+        if p["role"] == "ffts":
+            param_decls_lines.append(f"    {p['host_type']} *{p['name']}Device = nullptr;")
+            param_decls_lines.append(f"    uint64_t {p['name']}FftsAddr = 0;")
+            param_decls_lines.append(f"    uint32_t {p['name']}FftsLen = 0;")
+        else:
+            param_decls_lines.append(f"    {p['host_type']} *{p['name']}Host = nullptr;")
+            param_decls_lines.append(f"    {p['host_type']} *{p['name']}Device = nullptr;")
 
     alloc_host = []
     alloc_device = []
+    init_runtime_ptrs = []
     free_host = []
     free_device = []
-    for p in params:
-        if p["kind"] != "ptr":
-            continue
+    for p in data_ptrs:
         size_var = f"fileSize_{p['name']}"
         alloc_host.append(
             f"    ACL_CHECK(aclrtMallocHost((void **)(&{p['name']}Host), {size_var}));"
@@ -994,6 +1022,19 @@ def generate_testcase(
         )
         free_device.append(f"    aclrtFree({p['name']}Device);")
         free_host.append(f"    aclrtFreeHost({p['name']}Host);")
+    for p in ffts_ptrs:
+        init_runtime_ptrs.append(
+            f"    if (const rtError_t _rt = rtGetC2cCtrlAddr(&{p['name']}FftsAddr, &{p['name']}FftsLen); _rt != RT_ERROR_NONE) {{"
+        )
+        init_runtime_ptrs.append(
+            f"        std::fprintf(stderr, \"[ERROR] rtGetC2cCtrlAddr failed for {p['name']}: %d (%s:%d)\\n\", (int)_rt, __FILE__, __LINE__);"
+        )
+        init_runtime_ptrs.append("        rc = 1;")
+        init_runtime_ptrs.append("        goto cleanup;")
+        init_runtime_ptrs.append("    }")
+        init_runtime_ptrs.append(
+            f"    {p['name']}Device = reinterpret_cast<{p['host_type']} *>({p['name']}FftsAddr);"
+        )
 
     read_inputs = []
     copy_inputs = []
@@ -1029,6 +1070,7 @@ def generate_testcase(
         .replace("@PARAM_DECLS@", param_decls)
         .replace("@ALLOC_HOST@", "\n".join(alloc_host))
         .replace("@ALLOC_DEVICE@", "\n".join(alloc_device))
+        .replace("@INIT_RUNTIME_PTRS@", "\n".join(init_runtime_ptrs))
         .replace("@READ_INPUTS@", "\n".join(read_inputs))
         .replace("@COPY_TO_DEVICE@", "\n".join(copy_inputs))
         .replace(
