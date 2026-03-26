@@ -233,6 +233,13 @@ while IFS= read -r -d '' cpp; do
     cd "${nv_dir}"
     export ACL_DEVICE_ID="${DEVICE_ID}"
 
+    CUSTOM_GOLDEN=0
+    CUSTOM_COMPARE=0
+    if [[ -f "./validation_meta.env" ]]; then
+      # shellcheck disable=SC1091
+      source "./validation_meta.env"
+    fi
+
     enable_sim_golden="OFF"
     [[ "${GOLDEN_MODE}" == "sim" ]] && enable_sim_golden="ON"
     cmake -S . -B ./build \
@@ -265,7 +272,9 @@ while IFS= read -r -d '' cpp; do
       sim)
         python3 ./golden.py
         LD_LIBRARY_PATH="${LD_LIBRARY_PATH_SIM}" ./build/${testcase}_sim
-        copy_outputs_as_golden
+        if [[ "${CUSTOM_GOLDEN}" != "1" ]]; then
+          copy_outputs_as_golden
+        fi
         if [[ "${RUN_MODE}" == "npu" ]]; then
           LD_LIBRARY_PATH="${LD_LIBRARY_PATH_NPU}" ./build/${testcase}
         fi
@@ -278,9 +287,11 @@ while IFS= read -r -d '' cpp; do
         fi
         python3 ./golden.py
         LD_LIBRARY_PATH="${LD_LIBRARY_PATH_NPU}" ./build/${testcase}
-        copy_outputs_as_golden
-        python3 ./golden.py
-        LD_LIBRARY_PATH="${LD_LIBRARY_PATH_NPU}" ./build/${testcase}
+        if [[ "${CUSTOM_GOLDEN}" != "1" ]]; then
+          copy_outputs_as_golden
+          python3 ./golden.py
+          LD_LIBRARY_PATH="${LD_LIBRARY_PATH_NPU}" ./build/${testcase}
+        fi
         COMPARE_STRICT=1 python3 ./compare.py
         ;;
       skip)
