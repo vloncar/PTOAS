@@ -5957,12 +5957,12 @@ pto.tfillpad_expand ins(%src : !pto.tile_buf<...>) outs(%dst : !pto.tile_buf<...
 
 ##### `pto.tsort32` - Sort Fixed 32-Element Blocks
 
-**Summary:** Sorts fixed-size 32-element blocks and produces an index mapping.
+**Summary:** Sorts fixed-size 32-element blocks using an explicit input index tile.
 
 **Semantics:**
 
 ```
-dst = sort(src)
+dst = sort(src, idx)
 idx = permutation indices for the sort
 ```
 
@@ -5970,18 +5970,18 @@ idx = permutation indices for the sort
 
 | Name | Type | Description |
 |------|------|-------------|
-| `src` | `pto.tile_buf` | Input tile |
-| `dst` | `pto.tile_buf` | Sorted output |
-| `idx` | `pto.tile_buf` | Index mapping output |
+| `src` | `pto.tile_buf` | Input value tile |
+| `idx` | `pto.tile_buf` | Input index tile permuted together with `src` |
 | `tmp` | `Optional<pto.tile_buf>` | Optional scratch tile for the tmp-taking DPS overload |
+| `dst` | `pto.tile_buf` | Output tile storing sorted value-index pairs |
 
-**Results:** None. Writes into `dst`/`idx` via DPS pattern.
+**Results:** None. Writes into `dst` via DPS pattern.
 
 **Assembly Format:**
 
 ```
-pto.tsort32 ins(<src>[, <tmp>] : <src_type>[, <tmp_type>])
-           outs(<dst>, <idx> : <dst_type>, <idx_type>)
+pto.tsort32 ins(<src>, <idx>[, <tmp>] : <src_type>, <idx_type>[, <tmp_type>])
+           outs(<dst> : <dst_type>)
 ```
 
 **Constraints & Verification:**
@@ -5999,12 +5999,12 @@ pto.tsort32 ins(<src>[, <tmp>] : <src_type>[, <tmp_type>])
 **Basic Example:**
 
 ```mlir
-pto.tsort32 ins(%src : !pto.tile_buf<...>)
-           outs(%dst, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
+pto.tsort32 ins(%src, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
+           outs(%dst : !pto.tile_buf<...>)
 
 # Optional scratch form:
-pto.tsort32 ins(%src, %tmp : !pto.tile_buf<...>, !pto.tile_buf<...>)
-           outs(%dst, %idx : !pto.tile_buf<...>, !pto.tile_buf<...>)
+pto.tsort32 ins(%src, %idx, %tmp : !pto.tile_buf<...>, !pto.tile_buf<...>, !pto.tile_buf<...>)
+           outs(%dst : !pto.tile_buf<...>)
 ```
 
 ---

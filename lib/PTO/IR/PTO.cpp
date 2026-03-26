@@ -5413,18 +5413,24 @@ mlir::LogicalResult mlir::pto::TRowExpandOp::verify() {
 
 
 ParseResult mlir::pto::TSort32Op::parse(OpAsmParser &parser, OperationState &result) {
-  OpAsmParser::UnresolvedOperand src, dst, idx, tmp;
+  OpAsmParser::UnresolvedOperand src, idx, tmp, dst;
   Type srcTy, dstTy, idxTy, tmpTy;
   bool hasTmp = false;
 
   if (parser.parseKeyword("ins") || parser.parseLParen() || parser.parseOperand(src))
     return failure();
   if (succeeded(parser.parseOptionalComma())) {
-    if (parser.parseOperand(tmp))
+    if (parser.parseOperand(idx))
       return failure();
-    hasTmp = true;
+    if (succeeded(parser.parseOptionalComma())) {
+      if (parser.parseOperand(tmp))
+        return failure();
+      hasTmp = true;
+    }
+  } else {
+    return failure();
   }
-  if (parser.parseColonType(srcTy))
+  if (parser.parseColonType(srcTy) || parser.parseComma() || parser.parseType(idxTy))
     return failure();
   if (hasTmp) {
     if (parser.parseComma() || parser.parseType(tmpTy))
@@ -5434,38 +5440,38 @@ ParseResult mlir::pto::TSort32Op::parse(OpAsmParser &parser, OperationState &res
     return failure();
 
   if (parser.parseKeyword("outs") || parser.parseLParen() ||
-      parser.parseOperand(dst) || parser.parseComma() || parser.parseOperand(idx) ||
-      parser.parseColonType(dstTy) || parser.parseComma() || parser.parseType(idxTy) ||
+      parser.parseOperand(dst) || parser.parseColonType(dstTy) ||
       parser.parseRParen())
     return failure();
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
   if (parser.resolveOperand(src, srcTy, result.operands) ||
-      parser.resolveOperand(dst, dstTy, result.operands) ||
       parser.resolveOperand(idx, idxTy, result.operands))
     return failure();
   if (hasTmp) {
     if (parser.resolveOperand(tmp, tmpTy, result.operands))
       return failure();
   }
+  if (parser.resolveOperand(dst, dstTy, result.operands))
+    return failure();
 
   result.addAttribute(
       "operandSegmentSizes",
-      parser.getBuilder().getDenseI32ArrayAttr({1, 1, 1, hasTmp ? 1 : 0}));
+      parser.getBuilder().getDenseI32ArrayAttr({1, 1, hasTmp ? 1 : 0, 1}));
   return success();
 }
 
 void mlir::pto::TSort32Op::print(OpAsmPrinter &p) {
-  p << " ins(" << getSrc();
+  p << " ins(" << getSrc() << ", " << getIdx();
   if (getTmp()) {
     p << ", " << getTmp();
-    p << " : " << getSrc().getType() << ", " << getTmp().getType() << ")";
+    p << " : " << getSrc().getType() << ", " << getIdx().getType()
+      << ", " << getTmp().getType() << ")";
   } else {
-    p << " : " << getSrc().getType() << ")";
+    p << " : " << getSrc().getType() << ", " << getIdx().getType() << ")";
   }
-  p << " outs(" << getDst() << ", " << getIdx()
-    << " : " << getDst().getType() << ", " << getIdx().getType() << ")";
+  p << " outs(" << getDst() << " : " << getDst().getType() << ")";
   p.printOptionalAttrDict((*this)->getAttrs(), /*elidedAttrs=*/{"operandSegmentSizes"});
 }
 
@@ -7768,15 +7774,15 @@ PTO_DEFINE_BINARY_EFFECTS(TShrOp, getSrc0Mutable(), getSrc1Mutable(), getDstMuta
 PTO_DEFINE_UNARY_EFFECTS(TShlSOp, getSrcMutable(), getDstMutable())
 PTO_DEFINE_UNARY_EFFECTS(TShrSOp, getSrcMutable(), getDstMutable())
 
-// TSORT32: Read(src) -> Write(dst, idx [, tmp])
+// TSORT32: Read(src, idx) -> Write(dst [, tmp])
 void TSort32Op::getEffects(
     SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &effects) {
   PTO_ADD_READ(getSrcMutable());
-  PTO_ADD_WRITE(getDstMutable());
-  PTO_ADD_WRITE(getIdxMutable());
+  PTO_ADD_READ(getIdxMutable());
   auto tmp = getTmpMutable();
   if (!tmp.empty())
     PTO_ADD_WRITE(tmp[0]);
+  PTO_ADD_WRITE(getDstMutable());
 }
 
 PTO_DEFINE_UNARY_EFFECTS(TSqrtOp, getSrcMutable(), getDstMutable())
