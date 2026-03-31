@@ -517,10 +517,6 @@ struct PTOViewToMemrefPass
   void runOnOperation() override {
     ModuleOp mod = getOperation();
     MLIRContext *ctx = &getContext();
-    auto buildLevelAttr =
-        mod->getAttrOfType<mlir::StringAttr>("pto.build_level");
-    const bool level3Mode =
-        buildLevelAttr && buildLevelAttr.getValue() == "level3";
 
     for (auto func : mod.getOps<func::FuncOp>()) {
       if (func.isExternal()) continue;
@@ -639,21 +635,7 @@ struct PTOViewToMemrefPass
           continue;
         }
 
-        // 7. Otherwise, either:
-        //   - level3: lower to declare-style handle (no real allocation), and
-        //             rely on explicit tassign for address binding.
-        //   - non-level3: allocate a concrete memref buffer.
-        if (level3Mode) {
-          auto declaredMemRef =
-              rewriter.create<pto::DeclareTileMemRefOp>(loc, targetType);
-          auto bindOp = rewriter.create<pto::BindTileOp>(
-              loc, targetType, declaredMemRef.getResult(),
-              vRow ? vRow : Value(), vCol ? vCol : Value(), configAttr);
-          markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
-          rewriter.replaceOp(op, bindOp.getResult());
-          continue;
-        }
-
+        // 7. Otherwise allocate a concrete memref buffer and bind tile.
         // memref.alloc 要求明确的 layout，不能是动态 offset。
         auto allocLayout = StridedLayoutAttr::get(ctx, 0, strides); // offset = 0
         auto allocType = MemRefType::get(shape, elemTy, allocLayout, tbTy.getMemorySpace());

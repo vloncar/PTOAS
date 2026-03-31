@@ -1076,7 +1076,7 @@ int main(int argc, char **argv) {
   if (effectiveLevel == PTOBuildLevel::Level3) {
     bool missing = false;
     module->walk([&](pto::AllocTileOp op) {
-      if (!op.getAddr() && !hasTAssign) {
+      if (!op.getAddr()) {
         op.emitError("requires 'addr' operand when --pto-level=level3");
         missing = true;
       }
