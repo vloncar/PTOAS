@@ -1,11 +1,16 @@
-/**
- * PTOViewToMemref.cpp
- * * 功能：将 PTO Dialect 的高层 Tile 操作降级为标准的 MemRef 操作。
- * 核心机制：
- * 1. 类型转换：!pto.tile_buf -> memref<..., offset: ?>
- * 2. 元数据保留：使用 pto.bind_tile 将 TileConfig 绑定到 SSA Value 上。
- * 3. 动态回溯：计算算子通过 lookupConfig 回溯 SSA 链条获取硬件配置。
- */
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+//===- PTOViewToMemref.cpp ------------------------------------------------===//
+//===----------------------------------------------------------------------===//
+//
+// Lower PTO tile/view operations to memref-based IR while preserving tile
+// metadata through binding ops and SSA backtracking.
 
 #include "PTO/IR/PTO.h"
 #include "PTO/Transforms/Passes.h"
@@ -513,9 +518,6 @@ struct PTOViewToMemrefPass
     ModuleOp mod = getOperation();
     MLIRContext *ctx = &getContext();
 
-    // Debug output before pass
-    // dumpPretty(mod.getOperation(), llvm::errs());
-
     for (auto func : mod.getOps<func::FuncOp>()) {
       if (func.isExternal()) continue;
 
@@ -633,7 +635,7 @@ struct PTOViewToMemrefPass
           continue;
         }
 
-        // 7. Otherwise, allocate a concrete memref buffer and bind metadata.
+        // 7. Otherwise allocate a concrete memref buffer and bind tile.
         // memref.alloc 要求明确的 layout，不能是动态 offset。
         auto allocLayout = StridedLayoutAttr::get(ctx, 0, strides); // offset = 0
         auto allocType = MemRefType::get(shape, elemTy, allocLayout, tbTy.getMemorySpace());
@@ -704,6 +706,24 @@ struct PTOViewToMemrefPass
         markForceDynamicValidShape(bindOp, tbTy.hasDynamicValid(), ctx);
 
         rewriter.replaceOp(op, bindOp.getResult());
+      }
+
+      // ------------------------------------------------------------------
+      // Stage 0.8: normalize pto.tassign result type to match tile operand
+      // after tile_buf -> memref lowering (required for verifier consistency).
+      // ------------------------------------------------------------------
+      SmallVector<mlir::pto::TAssignOp, 8> tassignOps;
+      func.walk([&](mlir::pto::TAssignOp op) { tassignOps.push_back(op); });
+      for (auto op : tassignOps) {
+        Type targetTy = op.getTile().getType();
+        if (op.getResult().getType() == targetTy)
+          continue;
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+        auto normalized =
+            rewriter.create<pto::TAssignOp>(op.getLoc(), targetTy, op.getTile(),
+                                            op.getAddr());
+        rewriter.replaceOp(op, normalized.getResult());
       }
 
       // ------------------------------------------------------------------
@@ -1702,7 +1722,7 @@ struct PTOViewToMemrefPass
         IRRewriter rewriter(ctx);
         rewriter.setInsertionPoint(op);
 
-        Value s= op.getS();
+        Value s = op->getOperand(0);
         Value dst = op.getDst();
         bool descending = op.getDescending();
 
@@ -2599,6 +2619,42 @@ struct PTOViewToMemrefPass
             dst);
       }
 
+      SmallVector<mlir::pto::TQuantOp, 8> quantops;
+      func.walk([&](mlir::pto::TQuantOp op) { quantops.push_back(op); });
+
+      for (auto op : quantops) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+
+        Value src = op.getSrc();
+        Value fp = op.getFp();
+        Value offset = op.getOffset();
+        Value dst = op.getDst();
+
+        auto srcTy = dyn_cast<MemRefType>(src.getType());
+        auto fpTy = dyn_cast<MemRefType>(fp.getType());
+        auto dstTy = dyn_cast<MemRefType>(dst.getType());
+        if (!srcTy || !fpTy || !dstTy) {
+          op.emitError("ins/outs are not memref yet");
+          signalPassFailure();
+          return;
+        }
+        if (offset && !dyn_cast<MemRefType>(offset.getType())) {
+          op.emitError("offset is not memref yet");
+          signalPassFailure();
+          return;
+        }
+
+        rewriter.replaceOpWithNewOp<pto::TQuantOp>(
+            op,
+            TypeRange{},
+            src,
+            fp,
+            offset,
+            dst,
+            op.getQuantTypeAttr());
+      }
+
       SmallVector<mlir::pto::TMrgSortOp, 8> mrgsortops;
       func.walk([&](mlir::pto::TMrgSortOp op) { mrgsortops.push_back(op); });
 
@@ -2797,6 +2853,33 @@ struct PTOViewToMemrefPass
         }
 
         rewriter.replaceOpWithNewOp<pto::TPartAddOp>(
+            op,
+            src0,
+            src1,
+            dst);
+      }
+
+      SmallVector<mlir::pto::TPartMulOp, 8> partmulops;
+      func.walk([&](mlir::pto::TPartMulOp op) { partmulops.push_back(op); });
+
+      for (auto op : partmulops) {
+        IRRewriter rewriter(ctx);
+        rewriter.setInsertionPoint(op);
+
+        Value src0 = op.getSrc0();
+        Value src1 = op.getSrc1();
+        Value dst = op.getDst();
+
+        auto src0Ty = dyn_cast<MemRefType>(src0.getType());
+        auto src1Ty = dyn_cast<MemRefType>(src1.getType());
+        auto dstTy = dyn_cast<MemRefType>(dst.getType());
+        if (!src0Ty || !src1Ty || !dstTy) {
+          op.emitError("ins/outs are not memref yet");
+          signalPassFailure();
+          return;
+        }
+
+        rewriter.replaceOpWithNewOp<pto::TPartMulOp>(
             op,
             src0,
             src1,

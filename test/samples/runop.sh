@@ -249,11 +249,19 @@ process_one_dir() {
       echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
       continue
     fi
+    if [[ "$base" == "test_intercore_sync_a5_ptoisa_vec" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
+      continue
+    fi
     if [[ "$base" == "test_intercore_sync_a3" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a3" ]]; then
       echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a3"
       continue
     fi
     if [[ "$base" == "test_intercore_sync_a3_dyn" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a3" ]]; then
+      echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a3"
+      continue
+    fi
+    if [[ "$base" == "test_intercore_sync_a3_modes" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a3" ]]; then
       echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a3"
       continue
     fi
@@ -481,13 +489,18 @@ process_one_dir() {
       fi
     fi
     if [[ "$base" == "test_intercore_sync_a5" ]]; then
-      if ! grep -Fq "set_intra_block(PIPE_MTE3, 5)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.set lowering to set_intra_block"
+      if ! grep -Fq "#if defined(__DAV_CUBE__)" "$cpp" || ! grep -Fq "#if defined(__DAV_VEC__)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing mixed __DAV_CUBE__/__DAV_VEC__ section guards"
         overall=1
         continue
       fi
-      if ! grep -Fq "wait_intra_block(PIPE_V, 5)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.wait lowering to wait_intra_block"
+      if ! grep -Fq "set_intra_block(PIPE_FIX, 0)" "$cpp" || ! grep -Fq "set_intra_block(PIPE_FIX, 16)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 cube-side mirrored set_intra_block(PIPE_FIX, id/id+16)"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "wait_intra_block(PIPE_MTE3, 0)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 vec-side wait_intra_block(PIPE_MTE3, 0)"
         overall=1
         continue
       fi
@@ -498,18 +511,40 @@ process_one_dir() {
       fi
     fi
     if [[ "$base" == "test_intercore_sync_a5_functional" ]]; then
-      if ! grep -Fq "get_block_idx()" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing block-role dispatch (get_block_idx)"
+      if ! grep -Fq "#if defined(__DAV_CUBE__)" "$cpp" || ! grep -Fq "#if defined(__DAV_VEC__)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing mixed __DAV_CUBE__/__DAV_VEC__ section guards"
         overall=1
         continue
       fi
-      if ! grep -Fq "set_intra_block(PIPE_MTE3, 5)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.set lowering to set_intra_block"
+      if ! grep -Fq "set_intra_block(PIPE_FIX, 0)" "$cpp" || ! grep -Fq "set_intra_block(PIPE_FIX, 16)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 cube-side mirrored set_intra_block(PIPE_FIX, id/id+16)"
         overall=1
         continue
       fi
-      if ! grep -Fq "wait_intra_block(PIPE_V, 5)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 sync.wait lowering to wait_intra_block"
+      if ! grep -Fq "wait_intra_block(PIPE_MTE3, 0)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 vec-side wait_intra_block(PIPE_MTE3, 0)"
+        overall=1
+        continue
+      fi
+      if grep -Fq "ffts_cross_core_sync(" "$cpp" || grep -Fq "wait_flag_dev(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected A3-style inter-core sync call in A5 output"
+        overall=1
+        continue
+      fi
+    fi
+    if [[ "$base" == "test_intercore_sync_a5_ptoisa_vec" ]]; then
+      if ! grep -Fq "#if defined(__DAV_CUBE__)" "$cpp" || ! grep -Fq "#if defined(__DAV_VEC__)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing mixed __DAV_CUBE__/__DAV_VEC__ section guards"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "set_intra_block(PIPE_FIX, 0)" "$cpp" || ! grep -Fq "set_intra_block(PIPE_FIX, 16)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing PTO-ISA-style cube-side mirrored set_intra_block(PIPE_FIX, id/id+16)"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "wait_intra_block(PIPE_MTE3, 0)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing PTO-ISA-style vec-side wait_intra_block(PIPE_MTE3, 0)"
         overall=1
         continue
       fi
@@ -546,18 +581,41 @@ process_one_dir() {
         continue
       fi
     fi
+    if [[ "$base" == "test_intercore_sync_a3_modes" ]]; then
+      if ! grep -Fq "set_ffts_base_addr(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing set_ffts_base_addr() lowering"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "getFFTSMsg(0," "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A3 getFFTSMsg(0, ...) lowering"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "getFFTSMsg(1," "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A3 getFFTSMsg(1, ...) lowering"
+        overall=1
+        continue
+      fi
+    fi
     if [[ "$base" == "test_intercore_sync_a5_dyn" ]]; then
-      if ! grep -Eq "set_intra_block\\(PIPE_MTE3,[[:space:]]*v[0-9]+\\)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 dynamic sync.set lowering to set_intra_block(..., <var>)"
+      set_count=$(grep -Ec "set_intra_block\\(PIPE_FIX,[[:space:]]*v[0-9]+\\)" "$cpp" || true)
+      if ! grep -Eq "set_intra_block\\(PIPE_FIX,[[:space:]]*v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 dynamic sync.set lowering to set_intra_block(PIPE_FIX, <var>)"
         overall=1
         continue
       fi
-      if ! grep -Eq "wait_intra_block\\(PIPE_V,[[:space:]]*v[0-9]+\\)" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 dynamic sync.wait lowering to wait_intra_block(..., <var>)"
+      if [[ "$set_count" -ne 2 ]]; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected number of PIPE_FIX dynamic sync.set calls (expect 2: id and id+16)"
         overall=1
         continue
       fi
-      if grep -Fq "set_intra_block(PIPE_MTE3, 5)" "$cpp" || grep -Fq "wait_intra_block(PIPE_V, 5)" "$cpp"; then
+      if ! grep -Eq "wait_intra_block\\(PIPE_MTE3,[[:space:]]*v[0-9]+\\)" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing A5 dynamic sync.wait lowering to wait_intra_block(PIPE_MTE3, <var>)"
+        overall=1
+        continue
+      fi
+      if grep -Fq "set_intra_block(PIPE_FIX, 0)" "$cpp" || grep -Fq "set_intra_block(PIPE_FIX, 16)" "$cpp" || grep -Fq "wait_intra_block(PIPE_MTE3, 0)" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tunexpected static literal event-id in dynamic A5 test"
         overall=1
         continue
@@ -759,6 +817,43 @@ PY
       fi
       if grep -Fq "TFILLPAD(" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tpto.tfillpad_expand should not lower via TFILLPAD()"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "tcvt" ]]; then
+      if ! grep -Fq "TCVT(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TCVT() lowering for pto.tcvt"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "fillpad_inplace" ]]; then
+      if ! grep -Fq "TFILLPAD_INPLACE(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TFILLPAD_INPLACE() lowering for aliased pto.tfillpad"
+        overall=1
+        continue
+      fi
+      if grep -Fq "TFILLPAD_EXPAND(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tpto.tfillpad alias path should not lower via TFILLPAD_EXPAND()"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "extract_fp" ]]; then
+      if ! grep -Fq "TEXTRACT_FP(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TEXTRACT_FP() lowering for pto.textract_fp"
+        overall=1
+        continue
+      fi
+    fi
+
+    if [[ "$base" == "tinsert_fp" ]]; then
+      if ! grep -Fq "TINSERT_FP(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TINSERT_FP() lowering for pto.tinsert_fp"
         overall=1
         continue
       fi

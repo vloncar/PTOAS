@@ -1418,6 +1418,7 @@ All vector arithmetic operations execute on the **Vector pipeline** (`PIPE_V`) a
 | `pto.tpartadd` | Partial elementwise add |
 | `pto.tpartmax` | Partial elementwise max |
 | `pto.tpartmin` | Partial elementwise min |
+| `pto.tpartmul` | Partial elementwise mul |
 | `pto.tprelu` | `dst[i,j] = src0[i,j] > 0 ? src0[i,j] : src1[i,j] * src0[i,j]` |
 
 ---
@@ -2019,6 +2020,60 @@ The valid region is the intersection of each tile's valid rectangle defined by `
 
 ```mlir
 pto.tpartmin ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
+                 v_row=16, v_col=32, blayout=row_major, slayout=none_box,
+                 fractal=512, pad=0>,
+                 !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
+                 v_row=32, v_col=16, blayout=row_major, slayout=none_box,
+                 fractal=512, pad=0>)
+             outs(%c : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
+                 v_row=32, v_col=32, blayout=row_major, slayout=none_box,
+                 fractal=512, pad=0>)
+```
+
+---
+
+##### `pto.tpartmul` - Partial Elementwise Mul
+
+**Summary:** Partial elementwise mul with implementation-defined handling of mismatched valid regions.
+
+**Semantics:**
+
+```
+For each element (i, j) in the valid region:
+    dst[i, j] = src0[i, j] * src1[i, j]
+```
+
+The valid region is the intersection of each tile's valid rectangle defined by `v_row`/`v_col`; elements outside a tile's valid rectangle are padding/undefined.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src0` | `pto.tile_buf` | First source tile buffer |
+| `src1` | `pto.tile_buf` | Second source tile buffer |
+| `dst` | `pto.tile_buf` | Destination tile buffer |
+
+**Results:** None. Writes into `dst` via DPS pattern.
+
+**Constraints & Verification:**
+
+- **Implementation checks (A2A3)**
+  - `dst/src0/src1` element types must be identical, and must be one of: `i32`, `i16`, `f16`, `f32`.
+  - All three tiles must use row-major layout (`blayout=row_major`).
+  - The implementation requires at least one input's valid region to match `dst`'s valid region, and the other input's valid region not greater than `dst`'s valid region (otherwise it asserts).
+- **Implementation checks (A5)**
+  - `dst/src0/src1` element types must be identical and must be one of: `i8`, `i16`, `i32`, `f16`, `bf16`, `f32`.
+  - Requires `src0` and `src1` valid region to be `<= dst` valid region in both dimensions; other patterns are not supported (target-defined behavior).
+
+**Hardware Mapping:**
+
+- Executes on the **Vector pipeline** (`PIPE_V`)
+- Operates on data in the **VEC (UB)** memory space
+
+**Basic Example:**
+
+```mlir
+pto.tpartmul ins(%a, %b : !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
                  v_row=16, v_col=32, blayout=row_major, slayout=none_box,
                  fractal=512, pad=0>,
                  !pto.tile_buf<loc=vec, dtype=f32, rows=32, cols=32,
@@ -4485,7 +4540,8 @@ pto.tcmp ins(<src0>, <src1> {cmpMode = <mode>} : <type0>, <type1>)
   - Output type must be `i8`.
   - `src0/src1/dst` must use `loc=vec`.
   - Valid bounds: `src valid row <= src.rows` and `src valid column <= src.cols`.
-  - `src0` and `dst` must have the same valid region: `src0 valid row == dst valid row` and `src0 valid column == dst valid column`.
+  - `src0` and `dst` must have the same valid region: 
+      `src0 valid row == src1 valid row == dst valid row` and `src0 valid column == src1 valid column`.
 - **Implementation checks (A5)**:
   - Input type must be one of: `i32`, `i16`, `i8`, `f32`, `f16`.
 
@@ -6301,6 +6357,55 @@ pto.tmov.fp ins(%acc, %fp : !pto.tile_buf<...>, !pto.tile_buf<...>)
 
 ---
 
+##### `pto.tquant` - Quantize Tile with Scaling Tile
+
+**Summary:** Quantizes `f32` source tile elements into a lower-precision integer format using a scaling (`fp`) tile. The quantization mode is controlled by the `quant_type` attribute.
+
+**Semantics:**
+
+```
+dst[i, j] = Quantize(src[i, j]; fp, quant_type)
+```
+
+- `INT8_SYM`: symmetric quantization; `dst` element type must be `i8`.
+- `INT8_ASYM`: asymmetric quantization; `dst` element type must be `ui8`.
+
+**Arguments:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `src` | `pto.tile_buf` | Source tile (`f32`) |
+| `fp` | `pto.tile_buf` | Scaling parameter tile |
+| `dst` | `pto.tile_buf` | Destination tile (`i8` for SYM, `ui8` for ASYM) |
+
+**Attributes:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `quant_type` | `#pto.quant_type` | `INT8_SYM` or `INT8_ASYM` |
+
+**Results:** None. Writes into `dst` via DPS pattern.
+
+**Constraints & Verification:**
+
+- `src` element type must be `f32`.
+- `dst` element type must be `i8` (`INT8_SYM`) or `ui8` (`INT8_ASYM`).
+- A2/A3: `src` and `dst` must use row-major layout.
+
+**Hardware Mapping:**
+
+- Executes on the **Vector pipeline** (`PIPE_V`)
+
+**Basic Example:**
+
+```mlir
+pto.tquant ins(%src, %fp : !pto.tile_buf<...>, !pto.tile_buf<...>)
+           outs(%dst : !pto.tile_buf<...>)
+           {quant_type = #pto<quant_type INT8_SYM>}
+```
+
+---
+
 ##### `pto.tstore_fp` - Store Accumulator with Scaling
 
 **Summary:** Stores an accumulator tile into global memory using a scaling (`fp`) tile.
@@ -6811,6 +6916,13 @@ function's reserved buffer declaration.
 **Syntax:**
 
 ```mlir
+// A2/A3 (with GM slot buffer):
+pto.aic_initialize_pipe {dir_mask = 1, slot_size = 1024}
+  (gm_slot_buffer = %gm_buf : !pto.ptr<f32>,
+   c2v_consumer_buf = %c2v_import : i32,
+   v2c_consumer_buf = %c0_i32 : i32)
+
+// A5 (without GM slot buffer):
 pto.aic_initialize_pipe {dir_mask = 1, slot_size = 1024}
   (c2v_consumer_buf = %c2v_import : i32,
    v2c_consumer_buf = %c0_i32 : i32)
@@ -6820,7 +6932,7 @@ pto.aic_initialize_pipe {dir_mask = 1, slot_size = 1024}
 
 - `dir_mask`: communication direction encoding
 - `slot_size`: logical slot size in bytes
-- `gm_slot_buffer`: optional GM slot-buffer operand
+- `gm_slot_buffer`: optional GM pointer (`!pto.ptr<T>`), required on A2/A3, omitted on A5
 - `c2v_consumer_buf`: C2V consumer local base address
 - `v2c_consumer_buf`: V2C consumer local base address
 
@@ -6838,6 +6950,13 @@ pto.aic_initialize_pipe {dir_mask = 1, slot_size = 1024}
 **Syntax:**
 
 ```mlir
+// A2/A3 (with GM slot buffer):
+pto.aiv_initialize_pipe {dir_mask = 1, slot_size = 1024}
+  (gm_slot_buffer = %gm_buf : !pto.ptr<f32>,
+   c2v_consumer_buf = %c2v_local : i32,
+   v2c_consumer_buf = %c0_i32 : i32)
+
+// A5 (without GM slot buffer):
 pto.aiv_initialize_pipe {dir_mask = 1, slot_size = 1024}
   (c2v_consumer_buf = %c2v_local : i32,
    v2c_consumer_buf = %c0_i32 : i32)
@@ -7242,10 +7361,10 @@ pto.trap
 | Type Conversion | 1 | V |
 | Integer Sequence Generation | 1 | V |
 | Scalar Element Access | 2 | V |
-| MX Quantized | 2 | M/V |
+| MX Quantized | 3 | M/V |
 | Synchronization | 5 | - |
 | CV-Related | 2 | - |
 | Runtime Intrinsics | 4 | - (Pure) |
 | Debug | 3 | - |
 
-**Total: 106 operations**
+**Total: 107 operations**

@@ -1,3 +1,16 @@
+// Copyright (c) 2026 Huawei Technologies Co., Ltd.
+// This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+// CANN Open Software License Agreement Version 2.0 (the "License").
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
+// Please refer to the License for details. You may not use this file except in compliance with the License.
+// THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+// INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+// See LICENSE in the root of the software repository for the full text of the License.
+
 //===- DialectPTO.cpp -----------------------------------------------------===//
 //
 // Python bindings for the PTO dialect types (pybind11 version).
@@ -363,6 +376,36 @@ PYBIND11_MODULE(_pto, m) {
           "value",
           [](MlirAttribute self) -> int32_t {
             return mlirPTOEventAttrGetValue(self);
+          });
+
+    py::enum_<mlir::pto::QuantType>(m, "QuantType")
+      .value("INT8_SYM",  mlir::pto::QuantType::INT8_SYM)
+      .value("INT8_ASYM", mlir::pto::QuantType::INT8_ASYM)
+      .export_values();
+
+    mlir_attribute_subclass(
+        m, "QuantTypeAttr",
+        [](MlirAttribute a) { return mlirPTOAttrIsAQuantTypeAttr(a); })
+      .def_classmethod(
+          "get",
+          [](py::object cls, py::object value, MlirContext ctx) -> py::object {
+            int32_t v = 0;
+            if (py::isinstance<py::int_>(value)) {
+              v = py::cast<int32_t>(value);
+            } else if (py::hasattr(value, "value")) {
+              v = value.attr("value").cast<int32_t>();
+            } else {
+              throw std::runtime_error("QuantTypeAttr.get expects int or QuantType enum");
+            }
+            MlirAttribute a = mlirPTOQuantTypeAttrGet(ctx, v);
+            if (mlirAttributeIsNull(a)) return py::none();
+            return cls.attr("__call__")(a);
+          },
+          py::arg("cls"), py::arg("value"), py::arg("context") = py::none())
+      .def_property_readonly(
+          "value",
+          [](MlirAttribute self) -> int32_t {
+            return mlirPTOQuantTypeAttrGetValue(self);
           });
 
     mlir_attribute_subclass(

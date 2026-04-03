@@ -7,11 +7,6 @@
 // See LICENSE in the root of the software repository for the full text of the License.
 
 //===- PTOOps.td - Pattern descriptor operations -----------*- tablegen -*-===//
-//
-// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
-// See https://llvm.org/LICENSE.txt for license information.
-// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-//
 //===----------------------------------------------------------------------===//
 //
 // This file declares the PTO dialect operations.
@@ -1192,7 +1187,7 @@ def AicInitializePipeOp : PTO_Op<"aic_initialize_pipe"> {
   let arguments = (ins
       I8Attr:$dir_mask,
       I32Attr:$slot_size,
-      Optional<I32>:$gm_slot_buffer,
+      Optional<PtrType>:$gm_slot_buffer,
       I32:$c2v_consumer_buf,
       I32:$v2c_consumer_buf
   );
@@ -1218,7 +1213,7 @@ def AivInitializePipeOp : PTO_Op<"aiv_initialize_pipe"> {
   let arguments = (ins
       I8Attr:$dir_mask,
       I32Attr:$slot_size,
-      Optional<I32>:$gm_slot_buffer,
+      Optional<PtrType>:$gm_slot_buffer,
       I32:$c2v_consumer_buf,
       I32:$v2c_consumer_buf
   );
@@ -1500,6 +1495,73 @@ def DeclareTileOp : PTO_Op<"declare_tile", [Pure]> {
   }];
 }
 
+def TAssignOp : PTO_Op<"tassign", [Pure]> {
+  let summary = "Rebind a declared tile handle to a runtime address";
+  let description = [{
+    Rebinds an existing tile handle to a new address. This op is intended for
+    manual synchronization workflows (for example, rebinding inside loops while
+    keeping the tile declaration outside the loop).
+  }];
+
+  let arguments = (ins
+    PTODpsType:$tile,
+    I64:$addr
+  );
+  let results = (outs PTODpsType:$result);
+
+  let assemblyFormat = [{
+    $tile `,` $addr attr-dict `:` qualified(type($tile)) `->` qualified(type($result))
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::LogicalResult verify();
+  }];
+}
+
+def DeclareEventIdArrayOp : PTO_Op<"declare_eventid_array"> {
+  let summary = "Declare a manual-only local event-id array";
+  let description = [{
+    Declares a local array used to store dynamic event ids in manual sync code.
+    This is a frontend/EmitC convenience feature and is not intended to
+    participate in PlanMemory or automatic synchronization passes.
+  }];
+
+  let results = (outs EventIdArrayType:$array);
+
+  let assemblyFormat = [{
+    attr-dict `->` qualified(type($array))
+  }];
+}
+
+def EventIdArrayGetOp : PTO_Op<"eventid_array_get"> {
+  let summary = "Read one element from a manual event-id array";
+
+  let arguments = (ins
+    EventIdArrayType:$array,
+    Index:$index
+  );
+  let results = (outs Index:$result);
+
+  let assemblyFormat = [{
+    $array `[` $index `]` attr-dict `:` qualified(type($array))
+  }];
+}
+
+def EventIdArraySetOp : PTO_Op<"eventid_array_set"> {
+  let summary = "Write one element into a manual event-id array";
+
+  let arguments = (ins
+    EventIdArrayType:$array,
+    Index:$index,
+    Index:$value
+  );
+  let results = (outs);
+
+  let assemblyFormat = [{
+    $array `[` $index `]` `,` $value attr-dict `:` qualified(type($array))
+  }];
+}
+
 def DeclareTileMemRefOp : PTO_Op<"declare_tile_memref", [Pure]> {
   let summary = "Internal memref placeholder for a tile whose address is assigned later";
   let description = [{
@@ -1731,11 +1793,14 @@ def SyncSetOp : PTO_Op<"sync.set"> {
   let description = [{
     Sets a synchronization signal on the specified pipeline stage.
     Corresponds to `ffts_cross_core_sync` (A3) or `set_intra_block` (A5).
+    On A3, the optional `ffts_mode` attribute selects the first argument passed
+    to `getFFTSMsg`; if omitted, the legacy `FFTS_MODE_VAL` path is preserved.
   }];
 
   let arguments = (ins
     PTO_PipeAttr:$pipe,
     OptionalAttr<I32Attr>:$event_id,
+    OptionalAttr<I32Attr>:$ffts_mode,
     Optional<Index>:$event_id_dyn
   );
 
@@ -2912,6 +2977,37 @@ def TExtractOp : PTO_TOp<"textract", [
   }];
 }
 
+def TExtractFPOp : PTO_TOp<"textract_fp", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Extract acc tile window into dst using fp/scaling tile (tilebuf, DPS)";
+
+  let arguments = (ins
+    PTODpsType:$src,
+    PTODpsType:$fp,
+    Index:$indexRow,
+    Index:$indexCol,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `ins` `(` $src `,` $fp `,` $indexRow `,` $indexCol `:` qualified(type($src)) `,` qualified(type($fp)) `,` type($indexRow) `,` type($indexCol) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_FIX; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+
 def TInsertOp : PTO_TOp<"tinsert", [
   PTO_DpsInitOpInterface,
   OpPipeInterface,
@@ -2994,6 +3090,37 @@ def TInsertOp : PTO_TOp<"tinsert", [
       // Default and Acc->Mat path.
       return ::mlir::pto::PIPE::PIPE_FIX;
     }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+
+def TInsertFPOp : PTO_TOp<"tinsert_fp", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Insert acc tile window into dst using fp/scaling tile (tilebuf, DPS)";
+
+  let arguments = (ins
+    PTODpsType:$src,
+    PTODpsType:$fp,
+    Index:$indexRow,
+    Index:$indexCol,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `ins` `(` $src `,` $fp `,` $indexRow `,` $indexCol `:` qualified(type($src)) `,` qualified(type($fp)) `,` type($indexRow) `,` type($indexCol) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_FIX; }
     ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
   }];
 }
@@ -3640,6 +3767,38 @@ def TPartMinOp: PTO_TOp<"tpartmin", [
   }];
 }
 //===----------------------------------------------------------------------===//
+// PTOOps.td  (add TPARTMUL TBDPS/tile buffer op)
+//===----------------------------------------------------------------------===//
+
+def TPartMulOp: PTO_TOp<"tpartmul", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "Partial elementwise mul with implementation-defined handling of mismatched valid regions.";
+
+  let arguments = (ins
+    PTODpsType:$src0,
+    PTODpsType:$src1,
+    PTODpsType:$dst
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let assemblyFormat = [{
+    `ins` `(` $src0 `,` $src1 `:` qualified(type($src0)) `,` qualified(type($src1)) `)`
+    `outs` `(` $dst `:` qualified(type($dst) ) `)`
+    attr-dict
+  }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+//===----------------------------------------------------------------------===//
 // PTOOps.td  (add TPRELU TBDPS/tile buffer op)
 //===----------------------------------------------------------------------===//
 
@@ -3670,6 +3829,50 @@ def TPReluOp: PTO_TOp<"tprelu", [
     `outs` `(` $dst `:` qualified(type($dst) ) `)`
     attr-dict
   }];
+
+  let extraClassDeclaration = [{
+    ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
+    ::mlir::MutableOperandRange getDpsInitsMutable() { return getDstMutable(); }
+  }];
+}
+//===----------------------------------------------------------------------===//
+// TQuantOp
+//===----------------------------------------------------------------------===//
+
+def TQuantOp : PTO_TOp<"tquant", [
+  PTO_DpsInitOpInterface,
+  OpPipeInterface,
+  DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
+]> {
+  let summary = "TQUANT: Quantize a tile using a scaling (fp) tile.";
+
+  let description = [{
+    Converts src tile elements to a lower-precision format using the scaling
+    parameters held in the fp tile, writing results into dst.
+
+    For INT8_ASYM an additional offset tile must be supplied in ins.
+
+    DPS form (INT8_SYM):
+      pto.tquant ins(%src, %fp : <src_type>, <fp_type>)
+                 outs(%dst : <dst_type>) {quant_type = #pto<quant_type INT8_SYM>}
+    DPS form (INT8_ASYM):
+      pto.tquant ins(%src, %fp, %offset : <src_type>, <fp_type>, <offset_type>)
+                 outs(%dst : <dst_type>) {quant_type = #pto<quant_type INT8_ASYM>}
+  }];
+
+  let arguments = (ins
+    PTODpsType:$src,
+    PTODpsType:$fp,
+    Optional<PTODpsType>:$offset,
+    PTODpsType:$dst,
+    PTO_QuantTypeAttr:$quant_type
+  );
+
+  let results = (outs);
+
+  let hasVerifier = 1;
+
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
@@ -4212,18 +4415,14 @@ def TRsqrtOp: PTO_TOp<"trsqrt", [
 
   let arguments = (ins
     PTODpsType:$src,
-    PTODpsType:$dst
+    PTODpsType:$dst,
+    Optional<PTODpsType>:$tmp
   );
 
   let results = (outs);
 
   let hasVerifier = 1;
-
-  let assemblyFormat = [{
-    `ins` `(` $src `:` qualified(type($src)) `)`
-    `outs` `(` $dst `:` qualified(type($dst) ) `)`
-    attr-dict
-  }];
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
     ::mlir::pto::PIPE getPipe() { return ::mlir::pto::PIPE::PIPE_V; }
