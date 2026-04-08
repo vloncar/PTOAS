@@ -32,6 +32,10 @@ def make_bf16(generator, count: int, *, scale: float = 0.05) -> np.ndarray:
     return float32_to_bf16(make_fp32(generator, count, scale=scale))
 
 
+def round_fp32_to_bf16_fp32(values: np.ndarray) -> np.ndarray:
+    return bf16_to_float32(float32_to_bf16(values))
+
+
 def main():
     meta = load_case_meta()
     generator = rng()
@@ -61,7 +65,7 @@ def main():
                 load_strided_2d(buffers["v1"], offset=b0 * 5120 + k0, rows=4, cols=128, row_stride=5120)
             )
             gamma = load_strided_2d(buffers["v2"], offset=k0, rows=1, cols=128, row_stride=5120).astype(np.float32)
-            normed = x_chunk * inv_rms * gamma
+            normed = round_fp32_to_bf16_fp32(x_chunk * inv_rms * gamma)
             wk_chunk = bf16_to_float32(
                 load_strided_2d(buffers["v6"], offset=k0 * 1024 + kv0, rows=128, cols=64, row_stride=1024)
             )
