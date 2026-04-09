@@ -273,6 +273,7 @@ process_one_dir() {
     fi
     if [[ ( "$base" == "test_tmov_col_major_16x1_align_a5" || \
             "$base" == "test_tmov_row_major_1x16_control_a5" || \
+            "$base" == "decode_projection_incore_0" || \
             "$base" == "rmsnorm_incore_0" ) && \
           "${target_arch_lc}" != "a5" ]]; then
       echo -e "${A}(${base}.py)\tSKIP\trequires --pto-arch=a5"
@@ -326,6 +327,7 @@ process_one_dir() {
     # form with "operand count mismatch for op: pto.alloc_tile".
     if [[ "$base" == "test_tmov_col_major_16x1_align_a5" || \
           "$base" == "test_tmov_row_major_1x16_control_a5" || \
+          "$base" == "decode_projection_incore_0" || \
           "$base" == "rmsnorm_incore_0" ]]; then
       sample_use_ptobc_roundtrip=0
     fi
@@ -646,16 +648,21 @@ process_one_dir() {
     fi
 
     # A5 TMOV alignment repro/control samples:
-    # - col_major 16x1 should preserve TMOV + ColMajor tile shape in emitted C++
-    # - row_major 1x16 control should preserve TMOV + RowMajor tile shape
+    # - col_major 16x1 should be normalized into TRESHAPE + TMOV(row_major)
+    # - row_major 1x16 control should keep direct TMOV path without reshape
     if [[ "$base" == "test_tmov_col_major_16x1_align_a5" ]]; then
       if ! grep -Eq "\\bTMOV\\(" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tmissing TMOV() in col_major repro sample"
         overall=1
         continue
       fi
-      if ! grep -Fq "Tile<TileType::Vec, float, 16, 1, BLayout::ColMajor" "$cpp"; then
-        echo -e "${A}(${base}.py)\tFAIL\tmissing 16x1 ColMajor tile in col_major repro sample"
+      if ! grep -Fq "TRESHAPE(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TRESHAPE() normalization in col_major repro sample"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "Tile<TileType::Vec, float, 1, 16, BLayout::RowMajor" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing 1x16 RowMajor reinterpret tile in col_major repro sample"
         overall=1
         continue
       fi
@@ -668,6 +675,25 @@ process_one_dir() {
       fi
       if ! grep -Fq "Tile<TileType::Vec, float, 1, 16, BLayout::RowMajor" "$cpp"; then
         echo -e "${A}(${base}.py)\tFAIL\tmissing 1x16 RowMajor tile in row_major control sample"
+        overall=1
+        continue
+      fi
+      if grep -Fq "TRESHAPE(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tunexpected TRESHAPE() in row_major control sample"
+        overall=1
+        continue
+      fi
+    fi
+    # A5 regressions from real kernels (decode/rmsnorm):
+    # dangerous vec->vec col_major TMOV should be normalized into TRESHAPE + TMOV(row_major).
+    if [[ "$base" == "decode_projection_incore_0" || "$base" == "rmsnorm_incore_0" ]]; then
+      if ! grep -Fq "TRESHAPE(" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing TRESHAPE() normalization for col_major vec TMOV"
+        overall=1
+        continue
+      fi
+      if ! grep -Fq "Tile<TileType::Vec, float, 1, 16, BLayout::RowMajor" "$cpp"; then
+        echo -e "${A}(${base}.py)\tFAIL\tmissing 1x16 RowMajor reinterpret tile after TMOV normalization"
         overall=1
         continue
       fi
@@ -967,6 +993,7 @@ PY
       base="$(basename "$f" .pto)"
       if [[ ( "$base" == "test_tmov_col_major_16x1_align_a5" || \
               "$base" == "test_tmov_row_major_1x16_control_a5" || \
+              "$base" == "decode_projection_incore_0" || \
               "$base" == "rmsnorm_incore_0" ) && \
             "${target_arch_lc}" != "a5" ]]; then
         echo -e "${A}(${base}.pto)\tSKIP\trequires --pto-arch=a5"
@@ -983,6 +1010,7 @@ PY
       if [[ "$base" == "test_if_else_tile_result" || \
             "$base" == "test_tmov_col_major_16x1_align_a5" || \
             "$base" == "test_tmov_row_major_1x16_control_a5" || \
+            "$base" == "decode_projection_incore_0" || \
             "$base" == "rmsnorm_incore_0" ]]; then
         sample_use_ptobc_roundtrip=0
       fi
