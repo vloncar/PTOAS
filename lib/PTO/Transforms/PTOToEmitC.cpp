@@ -2354,14 +2354,13 @@ struct PTOMGatherToMGATHER : public OpConversionPattern<pto::MGatherOp> {
   LogicalResult matchAndRewrite(pto::MGatherOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     Value mem = peelUnrealized(adaptor.getMem());
+    Value idx = peelUnrealized(adaptor.getIdx());
     Value dst = peelUnrealized(adaptor.getDst());
 
-    // pto-isa currently has no NPU implementation for MGATHER/MSCATTER.
-    // Fallback to a smoke-friendly lowering to keep compile/run coverage.
     rewriter.create<emitc::CallOpaqueOp>(
-        op.getLoc(), TypeRange{}, "TLOAD",
+        op.getLoc(), TypeRange{}, "MGATHER",
         ArrayAttr{}, ArrayAttr{},
-        ValueRange{dst, mem});
+        ValueRange{dst, mem, idx});
 
      if (op->getNumResults() == 0) {
       rewriter.eraseOp(op);
@@ -4775,14 +4774,13 @@ struct PTOMScatterToMSCATTER : public OpConversionPattern<pto::MScatterOp> {
   LogicalResult matchAndRewrite(pto::MScatterOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     Value src = peelUnrealized(adaptor.getSrc());
+    Value idx = peelUnrealized(adaptor.getIdx());
     Value mem = peelUnrealized(adaptor.getMem());
 
-    // pto-isa currently has no NPU implementation for MGATHER/MSCATTER.
-    // Fallback to a smoke-friendly lowering to keep compile/run coverage.
     rewriter.create<emitc::CallOpaqueOp>(
-        op.getLoc(), TypeRange{}, "TSTORE",
+        op.getLoc(), TypeRange{}, "MSCATTER",
         ArrayAttr{}, ArrayAttr{},
-        ValueRange{mem, src});
+        ValueRange{mem, src, idx});
 
     rewriter.eraseOp(op);
     return success();
