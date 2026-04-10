@@ -44,6 +44,33 @@ static bool isA5RiskyVecVecColMajorTMov(pto::TMovOp op) {
   return isColMajorNoneBox(srcTb) && isColMajorNoneBox(dstTb);
 }
 
+template <typename CfgT>
+static auto buildRowMajorConfigImpl(int, MLIRContext *ctx,
+                                    pto::BLayoutAttr rowMajor, CfgT cfg)
+    -> decltype(pto::TileBufConfigAttr::get(ctx, rowMajor, cfg.getSLayout(),
+                                            cfg.getSFractalSize(), cfg.getPad(),
+                                            cfg.getCompactMode())) {
+  return pto::TileBufConfigAttr::get(ctx, rowMajor, cfg.getSLayout(),
+                                     cfg.getSFractalSize(), cfg.getPad(),
+                                     cfg.getCompactMode());
+}
+
+template <typename CfgT>
+static auto buildRowMajorConfigImpl(long, MLIRContext *ctx,
+                                    pto::BLayoutAttr rowMajor, CfgT cfg)
+    -> decltype(pto::TileBufConfigAttr::get(ctx, rowMajor, cfg.getSLayout(),
+                                            cfg.getSFractalSize(),
+                                            cfg.getPad())) {
+  return pto::TileBufConfigAttr::get(ctx, rowMajor, cfg.getSLayout(),
+                                     cfg.getSFractalSize(), cfg.getPad());
+}
+
+static pto::TileBufConfigAttr buildRowMajorConfig(MLIRContext *ctx,
+                                                  pto::TileBufConfigAttr cfg) {
+  auto rowMajor = pto::BLayoutAttr::get(ctx, pto::BLayout::RowMajor);
+  return buildRowMajorConfigImpl(0, ctx, rowMajor, cfg);
+}
+
 static FailureOr<pto::TileBufType>
 buildRowMajorReinterpretType(MLIRContext *ctx, pto::TileBufType srcType) {
   ArrayRef<int64_t> shape = srcType.getShape();
@@ -67,9 +94,7 @@ buildRowMajorReinterpretType(MLIRContext *ctx, pto::TileBufType srcType) {
   auto cfg = srcType.getConfigAttr();
   if (!cfg)
     cfg = pto::TileBufConfigAttr::getDefault(ctx);
-  auto rowMajor = pto::BLayoutAttr::get(ctx, pto::BLayout::RowMajor);
-  auto newCfg = pto::TileBufConfigAttr::get(ctx, rowMajor, cfg.getSLayout(),
-                                            cfg.getSFractalSize(), cfg.getPad());
+  auto newCfg = buildRowMajorConfig(ctx, cfg);
 
   return pto::TileBufType::get(ctx, swappedShape, srcType.getElementType(),
                                srcType.getMemorySpace(), swappedValid, newCfg);
@@ -110,9 +135,22 @@ struct PTOA5NormalizeTMovPass
           rewriter.create<pto::TReshapeOp>(op.getLoc(), *srcRowTy, op.getSrc());
       auto dstRow =
           rewriter.create<pto::TReshapeOp>(op.getLoc(), *dstRowTy, op.getDst());
-      auto newTmov = rewriter.create<pto::TMovOp>(
-          op.getLoc(), TypeRange{}, srcRow.getResult(), dstRow.getResult());
-      newTmov->setAttrs(op->getAttrs());
+      SmallVector<Value, 4> newOperands(op->operand_begin(), op->operand_end());
+      if (newOperands.size() < 2) {
+        op.emitOpError("unexpected operand count while normalizing TMOV");
+        signalPassFailure();
+        return;
+      }
+      newOperands[0] = srcRow.getResult();
+      newOperands[1] = dstRow.getResult();
+
+      OperationState state(op.getLoc(), pto::TMovOp::getOperationName());
+      state.addOperands(newOperands);
+      state.addTypes(op->getResultTypes());
+      state.addAttributes(op->getAttrs());
+      auto *created = rewriter.create(state);
+      auto newTmov = cast<pto::TMovOp>(created);
+      (void)newTmov;
       rewriter.eraseOp(op);
     }
 
