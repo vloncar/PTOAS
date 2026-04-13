@@ -1111,6 +1111,23 @@ def generate_testcase(
     for p in data_ptrs:
         inferred = inferred_counts.get(p["name"])
         ptr_elem_counts[p["name"]] = int(inferred) if inferred and int(inferred) > 0 else logical_elem_count
+    if testcase in {"rmsnorm_incore_0", "decode_projection_incore_0"}:
+        # These repro kernels partition a [16, hidden] ND view with a row
+        # offset. Board validation runs a single-block case, so keep bf16
+        # input/output buffers large enough for the full 16xhidden window.
+        required_elems = 16 * (5120 if testcase == "rmsnorm_incore_0" else 8192)
+        for p in data_ptrs:
+            if p["host_type"] != "uint16_t":
+                continue
+            cur = int(ptr_elem_counts.get(p["name"], logical_elem_count))
+            ptr_elem_counts[p["name"]] = max(cur, required_elems)
+        if testcase == "decode_projection_incore_0":
+            # decode_projection_incore_0 also reads gamma as f32[1, 8192].
+            for p in data_ptrs:
+                if p["host_type"] != "float":
+                    continue
+                cur = int(ptr_elem_counts.get(p["name"], logical_elem_count))
+                ptr_elem_counts[p["name"]] = max(cur, 8192)
 
     templates_root = Path(__file__).resolve().parents[1] / "templates"
     template = (templates_root / "main_template.cpp").read_text(encoding="utf-8")
@@ -1141,6 +1158,24 @@ def generate_testcase(
         if p["kind"] != "scalar":
             continue
         t = p["host_type"]
+        if testcase in {"rmsnorm_incore_0", "decode_projection_incore_0"} and t in {
+            "int8_t",
+            "uint8_t",
+            "int16_t",
+            "uint16_t",
+            "int32_t",
+            "uint32_t",
+            "int64_t",
+            "uint64_t",
+            "int",
+            "unsigned",
+            "size_t",
+        }:
+            # These kernels use this scalar as row offset (%arg3).
+            # Keep it at 0 for single-block validation to avoid shifted windows.
+            value = "0"
+            param_decls_lines.append(f"    {t} {p['name']} = {value};")
+            continue
         # Some PTO-ISA APIs use small POD structs as scalar parameters.
         # Example: pto::MrgSortExecutedNumList (used by TMRGSORT multi-list variants).
         if t.endswith("MrgSortExecutedNumList"):
@@ -1455,7 +1490,7 @@ def generate_testcase(
         mem_base_define = "REGISTER_BASE"
 
     # CCE printing support is gated behind `--cce-enable-print` on some bisheng
-    # toolchains. Only enable it for kernels that actually emit printf.
+    # toolchains. Only enable it when kernels emit printf.
     needs_cce_print = bool(re.search(r"\b(?:bisheng::)?cce::printf\s*\(", raw_kernel_for_analysis))
     cce_enable_print_opt = "    --cce-enable-print" if needs_cce_print else ""
     cce_print_define_opt = "    -DPTOAS_ENABLE_CCE_PRINT=1" if needs_cce_print else ""
