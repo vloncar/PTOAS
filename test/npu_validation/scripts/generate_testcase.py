@@ -86,13 +86,6 @@ UNSTABLE_A3_CUSTOM_GOLDEN_CASES = frozenset({
 })
 
 CASE_INT_SCALAR_DEFAULTS = {
-    "qwen3_decode_layer_incore_13": {
-        "v7": 64,
-    },
-    "qwen3_decode_layer_incore_14": {
-        "v4": 1,
-        "v5": 64,
-    },
     "qwen3_decode_incore_4": {
         "v11": 1,
         "v12": 0,
@@ -143,15 +136,6 @@ CASE_INT_SCALAR_DEFAULTS = {
 }
 
 CASE_POINTER_COUNT_MINIMUMS = {
-    "qwen3_decode_layer_incore_13": {
-        "v2": 20480,
-        "v4": 131046528,
-        "v5": 131046528,
-    },
-    "qwen3_decode_layer_incore_14": {
-        "v1": 16384,
-        "v3": 651264,
-    },
 }
 
 

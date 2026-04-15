@@ -19,7 +19,7 @@ PYTHON_BIN="${PYTHON_BIN:-}"
 PTOAS_OUT_DIR="${PTOAS_OUT_DIR:-}"
 PTOAS_ENABLE_INSERT_SYNC="${PTOAS_ENABLE_INSERT_SYNC:-1}"
 PTOAS_FLAGS="${PTOAS_FLAGS:-}"
-PTO_PTO_DIRS="${PTO_PTO_DIRS:-Sync Qwen3Tilelet Qwen3DecodeA3 Qwen3DecodeA5}"
+PTO_PTO_DIRS="${PTO_PTO_DIRS:-Sync Qwen3DecodeA3 Qwen3DecodeA5}"
 ENABLE_BC=0
 
 usage() {
@@ -36,7 +36,7 @@ Env:
   PTOAS_OUT_DIR  # where generated *.mlir/*.cpp go (optional; defaults to a temp dir)
   PTOAS_FLAGS  # extra flags passed to ptoas (e.g. --enable-insert-sync)
   PTOAS_ENABLE_INSERT_SYNC  # 1 to append --enable-insert-sync to PTOAS_FLAGS (default: 1)
-  PTO_PTO_DIRS  # space-separated dirs to run .pto directly (default: Sync Qwen3Tilelet Qwen3DecodeA3 Qwen3DecodeA5)
+  PTO_PTO_DIRS  # space-separated dirs to run .pto directly (default: Sync Qwen3DecodeA3 Qwen3DecodeA5)
 
 Flags:
   --enablebc  # enable: python -> .pto -> ptobc -> .pto -> ptoas
@@ -153,11 +153,7 @@ process_one_dir() {
   if [[ "${ENABLE_BC}" == "1" ]]; then
     use_ptobc_roundtrip=1
   fi
-  # Qwen3 tilelet kernels currently serve as direct ptoas compile-regression
-  # coverage. Default them to A5/level3 lowering when the caller does not
-  # provide an explicit arch, and skip them entirely when the caller forces an
-  # A3 lowering path because the samples use A5-only matmul tile layouts.
-  if [[ "$A" == "Qwen3Tilelet" || "$A" == "Qwen3DecodeA3" || "$A" == "Qwen3DecodeA5" ]]; then
+  if [[ "$A" == "Qwen3DecodeA3" || "$A" == "Qwen3DecodeA5" ]]; then
     use_ptobc_roundtrip=0
   fi
   local -a ptoas_flags=()
@@ -196,7 +192,7 @@ process_one_dir() {
       fi
     done
   fi
-  if [[ "$A" == "Qwen3Tilelet" || "$A" == "Qwen3DecodeA5" ]]; then
+  if [[ "$A" == "Qwen3DecodeA5" ]]; then
     if [[ $has_pto_arch_override -eq 0 ]]; then
       ptoas_flags+=(--pto-arch a5)
       target_arch="a5"
@@ -263,7 +259,7 @@ process_one_dir() {
     done
     return 0
   fi
-  if [[ ( "$A" == "Qwen3Tilelet" || "$A" == "Qwen3DecodeA5" ) && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
+  if [[ "$A" == "Qwen3DecodeA5" && "$(printf '%s' "$target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
     local qwen_case
     for qwen_case in "$dir"/*.pto; do
       [[ -f "$qwen_case" ]] || continue
@@ -274,7 +270,7 @@ process_one_dir() {
     done
     return 0
   fi
-  if [[ ( "$A" == "Qwen3Tilelet" || "$A" == "Qwen3DecodeA5" ) && -n "${soc_lc}" && "${soc_lc}" != *"a5"* && "${soc_lc}" != *"950"* ]]; then
+  if [[ "$A" == "Qwen3DecodeA5" && -n "${soc_lc}" && "${soc_lc}" != *"a5"* && "${soc_lc}" != *"950"* ]]; then
     local qwen_case
     for qwen_case in "$dir"/*.pto; do
       [[ -f "$qwen_case" ]] || continue
@@ -1093,7 +1089,7 @@ PY
       ptobc_file="${out_subdir}/${base}.ptobc"
       decoded_pto="${out_subdir}/${base}-roundtrip.pto"
       cpp="${out_subdir}/${base}.cpp"
-      if [[ "$A" == "Qwen3Tilelet" || "$A" == "Qwen3DecodeA3" || "$A" == "Qwen3DecodeA5" ]]; then
+      if [[ "$A" == "Qwen3DecodeA3" || "$A" == "Qwen3DecodeA5" ]]; then
         cpp="${out_subdir}/${base}-pto.cpp"
       fi
       local sample_use_ptobc_roundtrip="$use_ptobc_roundtrip"
