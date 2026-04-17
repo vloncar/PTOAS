@@ -1220,6 +1220,10 @@ PY
       if [[ -z "${sample_target_arch}" ]]; then
         sample_target_arch="${target_arch}"
       fi
+      if [[ "$base" == "test_tpush_tpop_roundtrip_nosplit_a5" && "$(printf '%s' "$sample_target_arch" | tr '[:upper:]' '[:lower:]')" != "a5" ]]; then
+        echo -e "${A}(${base}.pto)\tSKIP\trequires --pto-arch=a5"
+        continue
+      fi
       local sample_skip_vec_barrier=0
       if [[ "$(printf '%s' "${sample_target_arch}" | tr '[:upper:]' '[:lower:]')" == "a5" ]]; then
         sample_skip_vec_barrier=1
@@ -1273,6 +1277,31 @@ PY
       if [[ "$base" == "test_dynamic_valid_shape" ]]; then
         if ! grep -Fq "= Tile<TileType::Vec, float" "$cpp"; then
           echo -e "${A}(${base}.pto)\tFAIL\tmissing dynamic Tile constructor (valid_col likely dropped)"
+          overall=1
+          continue
+        fi
+      fi
+
+      # Regression guard: nosplit pipe init must propagate into emitted TPipe
+      # and all push/pop/free ops must lower with TILE_NO_SPLIT.
+      if [[ "$base" == "test_tpush_tpop_roundtrip_nosplit_a5" ]]; then
+        if ! grep -Eq "TPipe<[^>]*, true>" "$cpp"; then
+          echo -e "${A}(${base}.pto)\tFAIL\tmissing nosplit TPipe<..., true> lowering"
+          overall=1
+          continue
+        fi
+        if ! grep -Fq "TileSplitAxis::TILE_NO_SPLIT" "$cpp"; then
+          echo -e "${A}(${base}.pto)\tFAIL\tmissing TILE_NO_SPLIT lowering"
+          overall=1
+          continue
+        fi
+        if grep -Fq "TileSplitAxis::TILE_UP_DOWN" "$cpp" || grep -Fq "TileSplitAxis::TILE_LEFT_RIGHT" "$cpp"; then
+          echo -e "${A}(${base}.pto)\tFAIL\tunexpected split-axis lowering for nosplit sample"
+          overall=1
+          continue
+        fi
+        if ! grep -Fq "TSTORE(" "$cpp"; then
+          echo -e "${A}(${base}.pto)\tFAIL\tmissing vector-side store in nosplit roundtrip sample"
           overall=1
           continue
         fi
