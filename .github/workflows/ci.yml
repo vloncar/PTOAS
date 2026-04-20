@@ -211,6 +211,9 @@ jobs:
           export PATH="${LLVM_DIR}/utils:${LLVM_DIR}/bin:${PTO_INSTALL_DIR}/bin:${PATH}"
           export LD_LIBRARY_PATH="${LLVM_DIR}/lib:${PTO_INSTALL_DIR}/lib:${LD_LIBRARY_PATH:-}"
           export PYTHONPATH="${MLIR_PYTHONPATH}:${PTO_INSTALL_DIR}:${PYTHONPATH:-}"
+          ls ${LLVM_DIR}/utils
+          ls ${LLVM_DIR}/bin
+          ls ${LLVM_DIR}/build
           ninja -C build check-pto
 
       - name: Run sample tests (py -> pto -> cpp)
