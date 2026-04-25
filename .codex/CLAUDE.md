@@ -5,6 +5,7 @@ This repository keeps AI-assistant project knowledge in Codex skill format under
 Primary skills:
 
 - `ptoas-project-development`: project-wide development rules, cross-layer sync, tests, examples, and file headers.
+- `ptoas-publish-pr`: safely stage intended PTOAS changes, check `gh auth status`, remind the user to run `gh auth login` if needed, push to `origin`, and open or update a PR against the canonical repo.
 - `build-ptoas-wsl`: WSL build, install, runtime environment, and smoke-test workflow.
 - `camodel-isa-verification`: PTO-ISA CA model ST tests, instruction logs, latency checks, and UB dump verification.
 - `msprof-op-simulator-insight`: `msprof op simulator` collection and MindStudio Insight export workflow.
