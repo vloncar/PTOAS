@@ -947,17 +947,17 @@ ParseResult mlir::pto::PartitionViewOp::parse(OpAsmParser &parser,
     return success();
   }
 
-  SmallVector<Type> inferredReturnTypes;
-  DictionaryAttr attrs = result.attributes.getDictionary(parser.getContext());
-  if (failed(PartitionViewOp::inferReturnTypes(
-          parser.getContext(), std::nullopt, result.operands, attrs,
-          result.getRawProperties(),
-          RegionRange(), inferredReturnTypes))) {
+  ValueRange allOperands(result.operands);
+  ValueRange sizeOperands =
+      allOperands.slice(1 + offsets.size(), sizes.size());
+  auto inferredResultType = inferPartitionViewResultTypeFromSizes(
+      dyn_cast<mlir::pto::TensorViewType>(sourceTy), sizeOperands);
+  if (failed(inferredResultType)) {
     return parser.emitError(parser.getCurrentLocation(),
                             "failed to infer pto.partition_view result type");
   }
 
-  result.addTypes(inferredReturnTypes);
+  result.addTypes(*inferredResultType);
   return success();
 }
 
@@ -977,49 +977,6 @@ void mlir::pto::PartitionViewOp::print(OpAsmPrinter &printer) {
     return;
 
   printer << " -> " << getResult().getType();
-}
-
-LogicalResult mlir::pto::PartitionViewOp::inferReturnTypes(
-    MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
-    SmallVectorImpl<Type> &inferredReturnTypes) {
-  if (operands.empty())
-    return failure();
-
-  auto sourceType = dyn_cast<mlir::pto::TensorViewType>(operands.front().getType());
-  if (!sourceType)
-    return failure();
-
-  DenseI32ArrayAttr segmentSizes;
-  if (attributes)
-    segmentSizes = attributes.getAs<DenseI32ArrayAttr>("operandSegmentSizes");
-  ArrayRef<int32_t> segments;
-  if (properties) {
-    const auto *prop = properties.as<PartitionViewOp::Properties *>();
-    if (prop)
-      segments = prop->operandSegmentSizes;
-  }
-  if (segments.empty() && segmentSizes)
-    segments = segmentSizes.asArrayRef();
-  if (segments.empty())
-    return failure();
-
-  if (segments.size() != 3 || segments[0] != 1 || segments[1] < 0 ||
-      segments[2] < 0)
-    return failure();
-
-  size_t sizeStart = static_cast<size_t>(segments[0] + segments[1]);
-  size_t sizeCount = static_cast<size_t>(segments[2]);
-  if (sizeStart + sizeCount > operands.size())
-    return failure();
-
-  auto inferredResultType = inferPartitionViewResultTypeFromSizes(
-      sourceType, operands.slice(sizeStart, sizeCount));
-  if (failed(inferredResultType))
-    return failure();
-
-  inferredReturnTypes.push_back(*inferredResultType);
-  return success();
 }
 
 static std::optional<int64_t> getConstantIntegerValueEx(

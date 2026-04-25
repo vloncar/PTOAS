@@ -163,10 +163,7 @@ def MakeTensorViewOp : PTO_Op<"make_tensor_view", [AttrSizedOperandSegments]> {
 // =============================================================================
 // PartitionViewOp
 // =============================================================================
-def PartitionViewOp : PTO_Op<"partition_view", [
-    AttrSizedOperandSegments,
-    DeclareOpInterfaceMethods<InferTypeOpInterface>
-  ]> {
+def PartitionViewOp : PTO_Op<"partition_view", [AttrSizedOperandSegments]> {
   let summary = "Partition a tensor view into a smaller logical view (logical slicing).";
   let description = [{
     Captures a specific calculation region from a large view.

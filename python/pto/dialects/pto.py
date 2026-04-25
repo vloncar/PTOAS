@@ -640,7 +640,10 @@ class PartitionViewOp(_GeneratedPartitionViewOp):
             sizes, *args = args
         if args:
             raise TypeError(f"too many positional arguments: {len(args)}")
-        super().__init__(source=source, offsets=offsets, sizes=sizes, loc=loc, ip=ip)
+        source_value = _pto_ops_gen._get_op_result_or_value(source)
+        source_type = source_value.type
+        result = PartitionTensorViewType.get(source_type.rank, source_type.element_type)
+        self._init_explicit(result, source_value, offsets, sizes, (), loc, ip)
 
     def _init_explicit(self, result, source, offsets, sizes, args, loc, ip):
         if offsets is _PARTITION_VIEW_UNSET:
