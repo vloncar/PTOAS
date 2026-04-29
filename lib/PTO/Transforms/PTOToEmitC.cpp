@@ -3484,6 +3484,23 @@ static Value castToGMBytePointer(ConversionPatternRewriter &rewriter,
   return rewriter.create<emitc::CastOp>(loc, targetTy, value).getResult();
 }
 
+static Value materializeTensorViewDataPointer(
+    ConversionPatternRewriter &rewriter, Location loc, Value value,
+    Type sourceType) {
+  auto tvTy = dyn_cast<pto::TensorViewType>(sourceType);
+  if (!tvTy)
+    return value;
+
+  auto *ctx = rewriter.getContext();
+  std::string elemTypeStr = getElemTypeStringForGT(tvTy.getElementType());
+  auto ptrTy = emitc::PointerType::get(
+      emitc::OpaqueType::get(ctx, "__gm__ " + elemTypeStr));
+  return rewriter
+      .create<emitc::CallOpaqueOp>(loc, ptrTy, "PTOAS__GLOBAL_TENSOR_DATA",
+                                   ArrayAttr{}, ArrayAttr{}, ValueRange{value})
+      .getResult(0);
+}
+
 static std::string tileBufBLayoutToken(pto::TileBufConfigAttr configAttr) {
   std::string blTok = "BLayout::RowMajor";
   if (auto blAttr = dyn_cast<BLayoutAttr>(configAttr.getBLayout())) {
@@ -5444,6 +5461,8 @@ struct PTOInitializeL2G2LPipeToEmitC
         cast<Type>(getTypeConverter()->convertType(op.getPipe().getType()));
 
     Value gmAddr = peelUnrealized(adaptor.getGmAddr());
+    gmAddr = materializeTensorViewDataPointer(
+        rewriter, op.getLoc(), gmAddr, op.getGmAddr().getType());
     Value localAddr =
         op.getLocalAddr() ? peelUnrealized(adaptor.getLocalAddr()) : Value();
     auto i32Ty = emitc::OpaqueType::get(ctx, "int32_t");

@@ -8,14 +8,12 @@ module {
       attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %c8 = arith.constant 8 : index
     %c16 = arith.constant 16 : index
-    %c256 = arith.constant 256 : index
     %gm_slots = pto.make_tensor_view %gm_slot_buffer,
-      shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
-      : !pto.tensor_view<8x16x16xf32>
+      shape = [%c16, %c16], strides = [%c16, %c1]
+      : !pto.tensor_view<16x16xf32>
     pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
-      (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
+      (gm_slot_tensor = %gm_slots : !pto.tensor_view<16x16xf32>)
 
     %entry = pto.talloc_to_aiv {id = 0, split = 0}
       -> !pto.tensor_view<16x16xf32>
@@ -34,14 +32,12 @@ module {
       attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
-    %c8 = arith.constant 8 : index
     %c16 = arith.constant 16 : index
-    %c256 = arith.constant 256 : index
     %gm_slots = pto.make_tensor_view %gm_slot_buffer,
-      shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
-      : !pto.tensor_view<8x16x16xf32>
+      shape = [%c16, %c16], strides = [%c16, %c1]
+      : !pto.tensor_view<16x16xf32>
     pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
-      (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
+      (gm_slot_tensor = %gm_slots : !pto.tensor_view<16x16xf32>)
 
     %entry = pto.tpop_from_aic {id = 0, split = 0}
       -> !pto.tensor_view<16x16xf32>
@@ -55,13 +51,16 @@ module {
   }
 }
 
-// CHECK-LABEL: AICORE void cube_kernel(
-// CHECK: TPipe<0, Direction::DIR_C2V, 1024, 8, 8, true>({{.*}}, {{.*}}, {{.*}});
+// CHECK-LABEL: AICORE void cube_kernel
+// CHECK-SAME: (__gm__ float* [[CUBE_GM:v[0-9]+]],
+// CHECK: TPipe<0, Direction::DIR_C2V, 1024, 8, 8, true>([[CUBE_GM]], {{.*}}, {{.*}});
 // CHECK: GlobalTensor<float, pto::Shape<1, 1, 1, 16, 16>, pto::Stride<256, 256, 256, 16, 1>, pto::Layout::ND> [[CUBE_ENTRY:v[0-9]+]](nullptr);
 // CHECK: TALLOC<TPipe<0, Direction::DIR_C2V, 1024, 8, 8, true>, GlobalTensor<float, pto::Shape<1, 1, 1, 16, 16>, pto::Stride<256, 256, 256, 16, 1>, pto::Layout::ND>, TileSplitAxis::TILE_NO_SPLIT>({{.*}}, [[CUBE_ENTRY]]);
 // CHECK: TSTORE
 // CHECK: TPUSH<TPipe<0, Direction::DIR_C2V, 1024, 8, 8, true>, GlobalTensor<float, pto::Shape<1, 1, 1, 16, 16>, pto::Stride<256, 256, 256, 16, 1>, pto::Layout::ND>, TileSplitAxis::TILE_NO_SPLIT>({{.*}}, [[CUBE_ENTRY]]);
-// CHECK-LABEL: AICORE void vector_kernel(
+// CHECK-LABEL: AICORE void vector_kernel
+// CHECK-SAME: (__gm__ float* [[VEC_GM:v[0-9]+]],
+// CHECK: TPipe<0, Direction::DIR_C2V, 1024, 8, 8, true>([[VEC_GM]], {{.*}}, {{.*}});
 // CHECK: GlobalTensor<float, pto::Shape<1, 1, 1, 16, 16>, pto::Stride<256, 256, 256, 16, 1>, pto::Layout::ND> [[VEC_ENTRY:v[0-9]+]](nullptr);
 // CHECK: TPOP<TPipe<0, Direction::DIR_C2V, 1024, 8, 8, true>, GlobalTensor<float, pto::Shape<1, 1, 1, 16, 16>, pto::Stride<256, 256, 256, 16, 1>, pto::Layout::ND>, TileSplitAxis::TILE_NO_SPLIT>(
 // CHECK: TLOAD
@@ -70,7 +69,7 @@ module {
 // RESOLVE-LABEL: func.func @cube_kernel
 // RESOLVE-NOT: pto.reserve_buffer
 // RESOLVE-NOT: pto.import_reserved_buffer
-// RESOLVE: memref.reinterpret_cast %{{.*}} to offset: [0], sizes: [%{{.*}}, %{{.*}}, %{{.*}}], strides: [%{{.*}}, %{{.*}}, %{{.*}}]
+// RESOLVE: memref.reinterpret_cast %{{.*}} to offset: [0], sizes: [%{{.*}}, %{{.*}}], strides: [%{{.*}}, %{{.*}}]
 // RESOLVE: pto.initialize_l2g2l_pipe{{.*}}(%{{.*}} : memref<{{.*}}xf32{{.*}}>)
 // RESOLVE: pto.talloc(%{{.*}}, %{{.*}} : !pto.tensor_view<16x16xf32>, !pto.pipe)
 // RESOLVE: pto.tpush(%{{.*}}, %{{.*}} : !pto.tensor_view<16x16xf32>, !pto.pipe)

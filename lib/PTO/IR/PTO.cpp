@@ -10488,33 +10488,25 @@ getStaticElementCount(ArrayRef<int64_t> shape) {
 static LogicalResult verifyFrontendGlobalSlotTensor(Operation *op, Value tensor,
                                                     int8_t dirMask,
                                                     int32_t slotSize) {
+  (void)dirMask;
   auto tvTy = dyn_cast<TensorViewType>(tensor.getType());
   if (!tvTy)
     return op->emitOpError("expects 'gm_slot_tensor' to be !pto.tensor_view");
 
   ArrayRef<int64_t> shape = tvTy.getShape();
-  if (shape.size() < 2)
+  if (shape.empty())
     return op->emitOpError(
-        "expects 'gm_slot_tensor' to include an outer slot dimension and entry dimensions");
+        "expects 'gm_slot_tensor' to describe one slot entry tensor");
 
-  int32_t expectedSlotNum = dirMask == 3 ? 4 : 8;
-  if (shape.front() != ShapedType::kDynamic &&
-      shape.front() != expectedSlotNum) {
-    return op->emitOpError()
-           << "expects 'gm_slot_tensor' outer dimension to be "
-           << expectedSlotNum << " for dir_mask = " << static_cast<int>(dirMask);
-  }
-
-  SmallVector<int64_t, 4> entryShape(shape.begin() + 1, shape.end());
-  if (auto entryElemCount = getStaticElementCount(entryShape)) {
+  if (auto elemCount = getStaticElementCount(shape)) {
     uint64_t elemBytes = getElemByteSize(tvTy.getElementType());
-    if (elemBytes != 0 && *entryElemCount * elemBytes !=
+    if (elemBytes != 0 && *elemCount * elemBytes !=
                               static_cast<uint64_t>(slotSize)) {
       return op->emitOpError()
-             << "expects 'slot_size' to equal one gm_slot_tensor entry byte "
-                "size (got slot_size = "
-             << slotSize << ", entry byte size = "
-             << (*entryElemCount * elemBytes) << ")";
+             << "expects 'slot_size' to equal gm_slot_tensor byte size "
+                "(got slot_size = "
+             << slotSize << ", gm_slot_tensor byte size = "
+             << (*elemCount * elemBytes) << ")";
     }
   }
 
@@ -10807,22 +10799,21 @@ static LogicalResult verifyFrontendTensorEntryMatchesInit(Operation *op,
     return op->emitOpError()
            << "expects pipe entry element type to match gm_slot_tensor element type";
   }
-  if (slotTensorTy.getRank() != entryViewTy.getRank() + 1) {
+  if (slotTensorTy.getRank() != entryViewTy.getRank()) {
     return op->emitOpError()
-           << "expects pipe entry rank to equal gm_slot_tensor rank minus the "
-              "outer slot dimension";
+           << "expects pipe entry rank to match gm_slot_tensor rank";
   }
 
   ArrayRef<int64_t> slotShape = slotTensorTy.getShape();
   ArrayRef<int64_t> entryShape = entryViewTy.getShape();
   for (auto [idx, entryDim] : llvm::enumerate(entryShape)) {
-    int64_t slotDim = slotShape[idx + 1];
+    int64_t slotDim = slotShape[idx];
     if (slotDim == ShapedType::kDynamic ||
         entryDim == ShapedType::kDynamic || slotDim == entryDim)
       continue;
     return op->emitOpError()
            << "expects pipe entry dimension " << idx
-           << " to match gm_slot_tensor entry dimension " << slotDim;
+           << " to match gm_slot_tensor dimension " << slotDim;
   }
   return success();
 }
@@ -10898,6 +10889,87 @@ static LogicalResult verifyPipeHandleProducer(Operation *op, Value pipeHandle) {
         "pipe_handle must be produced by pto.initialize_l2l_pipe or "
         "pto.initialize_l2g2l_pipe");
   }
+  return success();
+}
+
+static bool getTensorLikeElementAndShape(Type ty, Type &elementType,
+                                         ArrayRef<int64_t> &shape) {
+  if (auto tvTy = dyn_cast<TensorViewType>(ty)) {
+    elementType = tvTy.getElementType();
+    shape = tvTy.getShape();
+    return true;
+  }
+  if (auto memrefTy = dyn_cast<MemRefType>(ty)) {
+    elementType = memrefTy.getElementType();
+    shape = memrefTy.getShape();
+    return true;
+  }
+  return false;
+}
+
+static LogicalResult verifyTensorEntryMatchesInternalPipeInit(Operation *op,
+                                                              Value pipeHandle,
+                                                              Type entryTy) {
+  auto entryViewTy = dyn_cast<TensorViewType>(entryTy);
+  if (!entryViewTy)
+    return success();
+
+  auto initOp = pipeHandle.getDefiningOp<InitializeL2G2LPipeOp>();
+  if (!initOp) {
+    return op->emitOpError()
+           << "expects !pto.tensor_view pipe entry to use a pipe produced by "
+              "pto.initialize_l2g2l_pipe";
+  }
+  if (initOp.getLocalAddr()) {
+    return op->emitOpError()
+           << "expects !pto.tensor_view pipe entry to use global-only "
+              "pto.initialize_l2g2l_pipe without local_addr";
+  }
+
+  Type slotElementType;
+  ArrayRef<int64_t> slotShape;
+  if (!getTensorLikeElementAndShape(initOp.getGmAddr().getType(),
+                                    slotElementType, slotShape)) {
+    return op->emitOpError()
+           << "expects !pto.tensor_view pipe entry to use "
+              "pto.initialize_l2g2l_pipe gm_addr with tensor/memref slot type";
+  }
+
+  if (slotElementType != entryViewTy.getElementType()) {
+    return op->emitOpError()
+           << "expects pipe entry element type to match initialize_l2g2l_pipe "
+              "gm_addr element type";
+  }
+  if (slotShape.size() != entryViewTy.getRank()) {
+    return op->emitOpError()
+           << "expects pipe entry rank to match initialize_l2g2l_pipe gm_addr "
+              "rank";
+  }
+
+  ArrayRef<int64_t> entryShape = entryViewTy.getShape();
+  for (auto [idx, entryDim] : llvm::enumerate(entryShape)) {
+    int64_t slotDim = slotShape[idx];
+    if (slotDim == ShapedType::kDynamic ||
+        entryDim == ShapedType::kDynamic || slotDim == entryDim)
+      continue;
+    return op->emitOpError()
+           << "expects pipe entry dimension " << idx
+           << " to match initialize_l2g2l_pipe gm_addr dimension "
+           << slotDim;
+  }
+
+  if (auto entryElemCount = getStaticElementCount(entryShape)) {
+    uint64_t elemBytes = getElemByteSize(entryViewTy.getElementType());
+    uint64_t entryBytes = *entryElemCount * elemBytes;
+    if (elemBytes != 0 && entryBytes !=
+                              static_cast<uint64_t>(initOp.getSlotSize())) {
+      return op->emitOpError()
+             << "expects pipe entry byte size to match initialize_l2g2l_pipe "
+                "slot_size (got entry byte size = "
+             << entryBytes << ", slot_size = " << initOp.getSlotSize() << ")";
+    }
+  }
+
   return success();
 }
 
@@ -11132,6 +11204,9 @@ LogicalResult TPushOp::verify() {
     return failure();
   if (failed(verifySplitAttr(getOperation(), getSplit())))
     return failure();
+  if (failed(verifyTensorEntryMatchesInternalPipeInit(
+          getOperation(), getPipeHandle(), getTile().getType())))
+    return failure();
   if (!isa<TensorViewType>(getTile().getType()) &&
       getPipe() == pto::PIPE::PIPE_UNASSIGNED)
     return emitOpError("tile type must map to a supported producer pipe");
@@ -11143,6 +11218,9 @@ LogicalResult TAllocOp::verify() {
     return emitOpError("must be inside pto.section.cube/vector or a kernel_kind function");
   if (failed(verifyPipeHandleProducer(getOperation(), getPipeHandle())))
     return failure();
+  if (failed(verifyTensorEntryMatchesInternalPipeInit(
+          getOperation(), getPipeHandle(), getEntry().getType())))
+    return failure();
   return verifySplitAttr(getOperation(), getSplit());
 }
 
@@ -11152,6 +11230,9 @@ LogicalResult TPopOp::verify() {
   if (failed(verifyPipeHandleProducer(getOperation(), getPipeHandle())))
     return failure();
   if (failed(verifySplitAttr(getOperation(), getSplit())))
+    return failure();
+  if (failed(verifyTensorEntryMatchesInternalPipeInit(
+          getOperation(), getPipeHandle(), getTile().getType())))
     return failure();
   if (!isa<TensorViewType>(getTile().getType()) &&
       getPipe() == pto::PIPE::PIPE_UNASSIGNED)
@@ -11164,6 +11245,10 @@ LogicalResult TFreeOp::verify() {
   if (!isInsideSectionOrAttributedKernel(getOperation()))
     return emitOpError("must be inside pto.section.cube/vector or a kernel_kind function");
   if (failed(verifyPipeHandleProducer(getOperation(), getPipeHandle())))
+    return failure();
+  if (getEntry() &&
+      failed(verifyTensorEntryMatchesInternalPipeInit(
+          getOperation(), getPipeHandle(), getEntry().getType())))
     return failure();
   return verifySplitAttr(getOperation(), getSplit());
 }

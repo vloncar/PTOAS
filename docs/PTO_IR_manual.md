@@ -7931,10 +7931,9 @@ frontend/framework generated IR. The detailed design document is:
   `gm_slot_tensor`; `gm_slot_buffer`, `c2v_consumer_buf`, `v2c_consumer_buf`, `local_slot_num`,
   `pto.reserve_buffer`, and `pto.import_reserved_buffer` are not used.
 - For global entries, the matched initialize op's `gm_slot_tensor` describes
-  the full FIFO buffer. Its outer slot dimension must match the lowered
-  `slot_num`; its inner dtype, shape, stride, and layout describe one FIFO slot
-  returned as a `tensor_view` by `talloc` / `tpop` and form the pto-isa
-  `GlobalData` template argument. `TILE_UP_DOWN` and
+  one FIFO slot entry, not the full multi-slot FIFO buffer. Its dtype, shape,
+  stride, and layout must match the `tensor_view` returned by `talloc` /
+  `tpop` and form the pto-isa `GlobalData` template argument. `TILE_UP_DOWN` and
   `TILE_LEFT_RIGHT` split modes derive sub-core GM address offsets from that
   single-slot descriptor's static rows, columns, and element dtype.
 - If a global-entry result op does not carry explicit stride/layout metadata,
@@ -8071,10 +8070,10 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, local_slot_num 
 
 // A2/A3 global-only GM FIFO (GlobalTensor pipe entry):
 %gm_slots = pto.make_tensor_view %gm_slot_buffer,
-  shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
-  : !pto.tensor_view<8x16x16xf32>
+  shape = [%c16, %c16], strides = [%c16, %c1]
+  : !pto.tensor_view<16x16xf32>
 pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
-  (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
+  (gm_slot_tensor = %gm_slots : !pto.tensor_view<16x16xf32>)
 
 // A5 (without GM slot buffer):
 pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
@@ -8093,10 +8092,11 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 - `nosplit`: optional compile-time boolean controlling no-split pipe mode
 - `gm_slot_buffer`: optional GM pointer (`!pto.ptr<T>`), used by A2/A3 GM FIFO
   paths that also use a local consumer FIFO buffer
-- `gm_slot_tensor`: optional complete FIFO buffer descriptor
-  (`!pto.tensor_view<...>`), required by global-only GM FIFO; its outer slot
-  dimension must match the lowered `slot_num`, and its inner shape describes one
-  `tensor_view` returned by `talloc` / `tpop`
+- `gm_slot_tensor`: optional single-slot entry descriptor
+  (`!pto.tensor_view<...>`), required by global-only GM FIFO. Its type describes
+  the `tensor_view` returned by `talloc` / `tpop`. This descriptor is retained
+  in IR for entry type validation; EmitC lowers the `TPipe` constructor
+  argument to only the GM FIFO start address
 - `c2v_consumer_buf`: optional C2V consumer local base address; omitted for
   global-only GM FIFO
 - `v2c_consumer_buf`: optional V2C consumer local base address; omitted for
@@ -8115,8 +8115,10 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
 - A global-only GM FIFO initialize carries only `gm_slot_tensor`; it must not
   carry `gm_slot_buffer`, `local_slot_num`, `c2v_consumer_buf`, or
   `v2c_consumer_buf`
-- For global-only GM FIFO, `slot_size` must match one inner slot of
+- For global-only GM FIFO, `slot_size` must match the byte size of
   `gm_slot_tensor`
+- Global-entry `talloc` / `tpush` / `tpop` / `tfree` entry types must match the
+  `gm_slot_tensor` descriptor in element type, rank, static shape, and byte size
 - The lowered pipes for one function must fit within 16 hardware flag ids in
   total
 - If `nosplit = true`, all frontend data-transfer ops bound to the same logical
@@ -8139,10 +8141,10 @@ pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, local_slot_num 
 
 // A2/A3 global-only GM FIFO (GlobalTensor pipe entry):
 %gm_slots = pto.make_tensor_view %gm_slot_buffer,
-  shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
-  : !pto.tensor_view<8x16x16xf32>
+  shape = [%c16, %c16], strides = [%c16, %c1]
+  : !pto.tensor_view<16x16xf32>
 pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
-  (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
+  (gm_slot_tensor = %gm_slots : !pto.tensor_view<16x16xf32>)
 
 // A5 (without GM slot buffer):
 pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024, nosplit = true}
@@ -8173,7 +8175,7 @@ This C2V global-only GM FIFO example intentionally has no
 `pto.reserve_buffer` and no `pto.import_reserved_buffer`. Both function
 signatures keep the FIFO buffer as `!pto.ptr<f32>`, then use
 `pto.make_tensor_view` before initialize_pipe to build the `gm_slot_tensor`
-descriptor for the full FIFO buffer.
+descriptor for one FIFO slot entry.
 
 ```mlir
 func.func @cube_kernel(%gm_slot_buffer : !pto.ptr<f32>,
@@ -8181,14 +8183,12 @@ func.func @cube_kernel(%gm_slot_buffer : !pto.ptr<f32>,
     attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
-  %c8 = arith.constant 8 : index
   %c16 = arith.constant 16 : index
-  %c256 = arith.constant 256 : index
   %gm_slots = pto.make_tensor_view %gm_slot_buffer,
-    shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
-    : !pto.tensor_view<8x16x16xf32>
+    shape = [%c16, %c16], strides = [%c16, %c1]
+    : !pto.tensor_view<16x16xf32>
   pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
-    (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
+    (gm_slot_tensor = %gm_slots : !pto.tensor_view<16x16xf32>)
 
   %entry = pto.talloc_to_aiv {id = 0, split = 0}
     -> !pto.tensor_view<16x16xf32>
@@ -8206,14 +8206,12 @@ func.func @vector_kernel(%gm_slot_buffer : !pto.ptr<f32>,
     attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
-  %c8 = arith.constant 8 : index
   %c16 = arith.constant 16 : index
-  %c256 = arith.constant 256 : index
   %gm_slots = pto.make_tensor_view %gm_slot_buffer,
-    shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
-    : !pto.tensor_view<8x16x16xf32>
+    shape = [%c16, %c16], strides = [%c16, %c1]
+    : !pto.tensor_view<16x16xf32>
   pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
-    (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
+    (gm_slot_tensor = %gm_slots : !pto.tensor_view<16x16xf32>)
 
   %entry = pto.tpop_from_aic {id = 0, split = 0}
     -> !pto.tensor_view<16x16xf32>
@@ -8255,7 +8253,8 @@ currently allocated FIFO slot.
   with `dir_mask = 1` or `dir_mask = 3`
 - Requires the matched pipe to lower to the A2/A3 GM FIFO path
 - The result type must match the single-slot descriptor derived from the matched
-  initialize op's `gm_slot_tensor`
+  initialize op's `gm_slot_tensor`; element type, rank, static shape, and byte
+  size are checked against the initialize op
 - Does not write data and does not notify the consumer; callers must write the
   returned GM entry explicitly before the matching `pto.tpush_to_aiv`
 
@@ -8287,7 +8286,8 @@ currently allocated FIFO slot.
   with `dir_mask = 2` or `dir_mask = 3`
 - Requires the matched pipe to lower to the A2/A3 GM FIFO path
 - The result type must match the single-slot descriptor derived from the matched
-  initialize op's `gm_slot_tensor`
+  initialize op's `gm_slot_tensor`; element type, rank, static shape, and byte
+  size are checked against the initialize op
 - Does not write data and does not notify the consumer; callers must write the
   returned GM entry explicitly before the matching `pto.tpush_to_aic`
 
@@ -8319,6 +8319,8 @@ pto.tpush_to_aiv(%entry : !pto.tensor_view<...>) {id = 0, split = 1}
 - `id` must match exactly one frontend initialize_pipe op in the same function
   with `dir_mask = 1` or `dir_mask = 3`
 - A global-entry operand requires a dominating matching `pto.talloc_to_aiv`
+- A global-entry operand type must match the single-slot descriptor derived from
+  the matched initialize op's `gm_slot_tensor`
 - A global-entry push does not perform `TSTORE`; it only notifies the consumer
   that the GM FIFO slot is ready
 
@@ -8350,6 +8352,8 @@ pto.tpush_to_aic(%entry : !pto.tensor_view<...>) {id = 0, split = 1}
 - `id` must match exactly one frontend initialize_pipe op in the same function
   with `dir_mask = 2` or `dir_mask = 3`
 - A global-entry operand requires a dominating matching `pto.talloc_to_aic`
+- A global-entry operand type must match the single-slot descriptor derived from
+  the matched initialize op's `gm_slot_tensor`
 - A global-entry push does not perform `TSTORE`; it only notifies the consumer
   that the GM FIFO slot is ready
 
@@ -8443,7 +8447,9 @@ also carries the entry descriptor returned by the matching `pto.tpop_from_aic`.
   with `dir_mask = 1` or `dir_mask = 3`
 - Tile-entry frees use the no-operand form
 - Global-entry frees use the entry operand and must run after all explicit reads
-  from that GM FIFO slot are complete
+  from that GM FIFO slot are complete; the entry operand type must match the
+  single-slot descriptor derived from the matched initialize op's
+  `gm_slot_tensor`
 
 ##### `pto.tfree_from_aiv` - Frontend V2C Consumer Free
 
@@ -8469,7 +8475,9 @@ also carries the entry descriptor returned by the matching `pto.tpop_from_aiv`.
   with `dir_mask = 2` or `dir_mask = 3`
 - Tile-entry frees use the no-operand form
 - Global-entry frees use the entry operand and must run after all explicit reads
-  from that GM FIFO slot are complete
+  from that GM FIFO slot are complete; the entry operand type must match the
+  single-slot descriptor derived from the matched initialize op's
+  `gm_slot_tensor`
 
 ---
 

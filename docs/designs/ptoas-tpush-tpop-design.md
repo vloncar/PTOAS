@@ -60,14 +60,14 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 3, slot_size = 1024, local_slot_num 
    v2c_consumer_buf = %v2c_consumer_buf : i32)
 ```
 
-若同一 `id` 绑定的 pipe entry 全部是 `global` entry，则该 pipe 是 global-only GM FIFO。此时初始化只需要描述完整 GM FIFO buffer 的 `tensor_view`，不需要 consumer 侧 local FIFO buffer：
+若同一 `id` 绑定的 pipe entry 全部是 `global` entry，则该 pipe 是 global-only GM FIFO。此时初始化只需要描述单个 FIFO slot entry 的 `tensor_view`，不需要 consumer 侧 local FIFO buffer：
 
 ```mlir
 %gm_slots = pto.make_tensor_view %gm_slot_buffer,
-  shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
-  : !pto.tensor_view<8x16x16xf32>
+  shape = [%c16, %c16], strides = [%c16, %c1]
+  : !pto.tensor_view<16x16xf32>
 pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
-  (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
+  (gm_slot_tensor = %gm_slots : !pto.tensor_view<16x16xf32>)
 ```
 
 #### 参数
@@ -79,7 +79,7 @@ pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
 | `SLOT_SIZE` | 编译期整数常量 | 单 slot 字节数，定义为切分前完整 pipe entry 字节数 |
 | `LOCAL_SLOT_NUM` | 编译期整数常量或空值 | 可选，仅在使用 consumer 侧 local FIFO buffer 的 tile-entry 路径影响槽数；global-only GM FIFO 省略 |
 | `GM_SLOT_BUFFER` | `!pto.ptr<T>` 或空值 | 使用 local consumer FIFO buffer 的 A2/A3 GM 路径使用的 GM slot buffer 指针，A5 路径为空 |
-| `GM_SLOT_TENSOR` | `!pto.tensor_view<...>` 或空值 | global-only GM FIFO 使用的完整 FIFO buffer descriptor；外层 slot 维度为 lowered `SLOT_NUM`，内层 shape/stride/layout 描述单个 GlobalTensor slot |
+| `GM_SLOT_TENSOR` | `!pto.tensor_view<...>` 或空值 | global-only GM FIFO 使用的单 slot entry descriptor；shape/stride/layout 必须与 `talloc` / `tpop` / `tpush` / `tfree` 使用的 GlobalTensor entry 对齐 |
 | `C2V_CONSUMER_BUF` | `i32` 或空值 | C2V 方向 consumer 的 local slot buffer 基址；global-only GM FIFO 省略 |
 | `V2C_CONSUMER_BUF` | `i32` 或空值 | V2C 方向 consumer 的 local slot buffer 基址；global-only GM FIFO 省略 |
 
@@ -102,10 +102,10 @@ global-only GM FIFO 形式同样只传 `gm_slot_tensor`：
 
 ```mlir
 %gm_slots = pto.make_tensor_view %gm_slot_buffer,
-  shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
-  : !pto.tensor_view<8x16x16xf32>
+  shape = [%c16, %c16], strides = [%c16, %c1]
+  : !pto.tensor_view<16x16xf32>
 pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
-  (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
+  (gm_slot_tensor = %gm_slots : !pto.tensor_view<16x16xf32>)
 ```
 
 参数语义与 `pto.aic_initialize_pipe` 相同。
@@ -121,7 +121,7 @@ pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
 
 当某条 frontend logical pipe 的数据传输 op 全部使用 `global` entry 时，该 pipe 不需要 consumer 侧 local FIFO buffer。对应的 `pto.aic_initialize_pipe` / `pto.aiv_initialize_pipe` 只携带 `gm_slot_tensor`，不携带 `c2v_consumer_buf` / `v2c_consumer_buf`，也不生成或引用 `pto.reserve_buffer` / `pto.import_reserved_buffer`。
 
-`global` entry 的 GM FIFO buffer 信息由 initialize op 的 `gm_slot_tensor` 描述；其外层维度表示 FIFO slot 数，内层 dtype、shape、stride/layout 描述单个 GlobalTensor slot。`talloc_to_*` / `tpop_from_*` 返回的 `tensor_view` 描述当前分配或弹出的完整单个 slot。若未显式提供 stride/layout，则按 row-major contiguous GlobalTensor 处理。
+`global` entry 的 GM FIFO 单 slot 信息由 initialize op 的 `gm_slot_tensor` 描述；该 `tensor_view` 本身就是单个 GlobalTensor slot descriptor，不包含 FIFO slot 数这一外层维度。`talloc_to_*` / `tpop_from_*` 返回的 `tensor_view` 描述当前分配或弹出的完整单个 slot，dtype、rank、静态 shape 和字节大小必须与 `gm_slot_tensor` 一致。若未显式提供 stride/layout，则按 row-major contiguous GlobalTensor 处理。
 
 #### `pto.talloc_to_aiv`
 
@@ -233,7 +233,7 @@ pto.tfree_from_aiv(%entry : !pto.tensor_view<...>) {id = 0, split = 0}
 
 #### GlobalTensor pipe entry 使用示例
 
-下面是 C2V 方向的 global-only GM FIFO 示例。两个 kernel 都只把完整 FIFO buffer 的 `gm_slot_tensor` 传给初始化 op；因为不使用 consumer 侧 local FIFO buffer，IR 中没有对应的 `pto.reserve_buffer` 或 `pto.import_reserved_buffer`。
+下面是 C2V 方向的 global-only GM FIFO 示例。两个 kernel 都只把单 slot entry descriptor `gm_slot_tensor` 传给初始化 op；因为不使用 consumer 侧 local FIFO buffer，IR 中没有对应的 `pto.reserve_buffer` 或 `pto.import_reserved_buffer`。
 
 ```mlir
 func.func @cube_kernel(%gm_slot_buffer : !pto.ptr<f32>,
@@ -241,14 +241,12 @@ func.func @cube_kernel(%gm_slot_buffer : !pto.ptr<f32>,
     attributes {pto.kernel_kind = #pto.kernel_kind<cube>} {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
-  %c8 = arith.constant 8 : index
   %c16 = arith.constant 16 : index
-  %c256 = arith.constant 256 : index
   %gm_slots = pto.make_tensor_view %gm_slot_buffer,
-    shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
-    : !pto.tensor_view<8x16x16xf32>
+    shape = [%c16, %c16], strides = [%c16, %c1]
+    : !pto.tensor_view<16x16xf32>
   pto.aic_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
-    (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
+    (gm_slot_tensor = %gm_slots : !pto.tensor_view<16x16xf32>)
 
   %entry = pto.talloc_to_aiv {id = 0, split = 0}
     -> !pto.tensor_view<16x16xf32>
@@ -266,14 +264,12 @@ func.func @vector_kernel(%gm_slot_buffer : !pto.ptr<f32>,
     attributes {pto.kernel_kind = #pto.kernel_kind<vector>} {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
-  %c8 = arith.constant 8 : index
   %c16 = arith.constant 16 : index
-  %c256 = arith.constant 256 : index
   %gm_slots = pto.make_tensor_view %gm_slot_buffer,
-    shape = [%c8, %c16, %c16], strides = [%c256, %c16, %c1]
-    : !pto.tensor_view<8x16x16xf32>
+    shape = [%c16, %c16], strides = [%c16, %c1]
+    : !pto.tensor_view<16x16xf32>
   pto.aiv_initialize_pipe {id = 0, dir_mask = 1, slot_size = 1024}
-    (gm_slot_tensor = %gm_slots : !pto.tensor_view<8x16x16xf32>)
+    (gm_slot_tensor = %gm_slots : !pto.tensor_view<16x16xf32>)
 
   %entry = pto.tpop_from_aic {id = 0, split = 0}
     -> !pto.tensor_view<16x16xf32>
@@ -492,7 +488,7 @@ global-only GM FIFO 示例：
     dir_mask = 1,
     slot_size = 1024,
     slot_num = 8
-}(%gm_slot_tensor : !pto.tensor_view<8x16x16xf32>) -> !pto.pipe
+}(%gm_slot_tensor : !pto.tensor_view<16x16xf32>) -> !pto.pipe
 ```
 
 DIR_BOTH 示例：
@@ -532,7 +528,7 @@ DIR_BOTH 示例：
 #### 操作数
 
 - `gm_addr`：使用 local consumer FIFO buffer 的 A2/A3 GM 路径使用
-- `gm_slot_tensor`：global-only GM FIFO 使用，描述完整 FIFO buffer
+- `gm_slot_tensor`：global-only GM FIFO 使用，描述单个 slot entry
 - `local_addr`（可选）：C2V consumer buf（或单向时唯一方向的 consumer buf），仅存在 consumer 侧 local FIFO buffer 时出现
 - `peer_local_addr`（可选）：V2C consumer buf，仅 `dir_mask = 3` 且存在 V2C consumer 侧 local FIFO buffer 时出现
 
@@ -1000,8 +996,8 @@ pass 在模块级按两步执行：
 - 前端数据传输 op 的 `split` 必须是合法的编译期常量属性
 - `global` entry 形式的 `talloc_to_*` / `tpush_to_*` / `tpop_from_*` / `tfree_from_*` 只能绑定到 GM FIFO pipe（A2/A3 `initialize_l2g2l_pipe` 路径）
 - 绑定到 global-only GM FIFO 的 initialize 只允许携带 `gm_slot_tensor`，不得携带 `gm_slot_buffer`、`local_slot_num`、`c2v_consumer_buf`、`v2c_consumer_buf`；该路径不要求 `reserve_buffer` / `import_reserved_buffer`
-- `gm_slot_tensor` 的外层 slot 维度必须匹配 lowered `slot_num`，单 slot 字节数必须匹配 `slot_size`
-- `talloc_to_*` / `tpop_from_*` 返回的 `tensor_view` 类型必须匹配 `gm_slot_tensor` 的单 slot descriptor
+- `gm_slot_tensor` 本身描述单个 slot entry；其字节数必须匹配 `slot_size`
+- `talloc_to_*` / `tpop_from_*` 返回的 `tensor_view` 类型必须匹配 `gm_slot_tensor`
 - `global` entry 的 dtype、shape 与 stride/layout 必须足以生成底层 `GlobalTensor<RawDType, Shape, Stride, Layout>` 类型
 - `global` entry transaction 中，producer 侧 `tpush_to_*` 必须有同 pipe、同 entry 的支配性 `talloc_to_*`
 - `global` entry transaction 中，consumer 侧 `tfree_from_*` 必须携带对应 `tpop_from_*` 返回的 entry；`tile` entry 路径保持无 operand `tfree_from_*`
@@ -1085,6 +1081,8 @@ EmitC 将以下内部 init op 映射到底层 `TPipe`：
 | 2 | `Direction::DIR_V2C` |
 | 3 | `Direction::DIR_BOTH` |
 
+当 `initialize_l2g2l_pipe` 来自 global-only GM FIFO 时，IR 中保留完整 `gm_slot_tensor` / tensor-like `gm_addr` 类型用于校验 slot descriptor；EmitC 构造底层 `TPipe` 时只传 GM FIFO 的起始地址。如果 `gm_addr` 仍是 `tensor_view` 形式，EmitC 先取 `PTOAS__GLOBAL_TENSOR_DATA(gm_addr)`；如果前端函数入参是 `!pto.ptr` 并通过 `pto.make_tensor_view` 描述形状，则最终仍直接把该 ptr 起始地址传给 `TPipe`。
+
 当 `dir_mask = 3` 时，EmitC 将 `local_addr` 作为 C2V consumer buf、`peer_local_addr` 作为 V2C consumer buf 传入 `TPipe` 构造函数。
 
 其中：
@@ -1112,6 +1110,7 @@ EmitC 将以下内部数据传输 op 映射到底层：
 - `split` 作为底层 `TALLOC/TPUSH/TPOP/TFREE` 的编译期模板实参透传
 - `tile` entry 映射到 `TPUSH<Pipe, Tile, Split>` / `TPOP<Pipe, Tile, Split>` / `TFREE<Pipe, Split>`
 - `global` entry 映射到 `TALLOC<Pipe, GlobalData, Split>` / `TPUSH<Pipe, GlobalData, Split>` / `TPOP<Pipe, GlobalData, Split>` / `TFREE<Pipe, GlobalData, Split>`
+- `GlobalData` 的类型来自单个 slot 的 `tensor_view` entry，必须与 pipe init 的 `gm_slot_tensor` descriptor 匹配；`TPipe` 构造函数本身只接收 GM FIFO 起始地址和两个 consumer buffer 地址
 - `global` entry 的 `TPUSH` / `TFREE` 不执行 `TSTORE` / `TLOAD`；它们只使用 entry descriptor 作为底层 transaction 描述符
 
 ### 10.3 InsertSync
